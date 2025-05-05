@@ -41,14 +41,14 @@ export default function Login() {
     
     setIsLoading(true);
     try {
-      // Modifica la función login para que devuelva los datos del usuario
+      // Asegúrate de que login devuelva { role: 'parent' | 'child', ... }
       const userData = await login(email, password);
       
-      // Usar el rol real del usuario para la navegación
-      if (userData && userData.role === 'driver') {
-        router.replace('/(app)/driver');
+      // Navegación según el rol parent | child
+      if (userData && userData.role === 'parent') {
+        router.replace('../users/index');
       } else {
-        router.replace('/(app)/client');
+        router.replace('../users/index');
       }
     } catch (error: any) {
       let errorMessage = 'Error al iniciar sesión';
@@ -131,7 +131,7 @@ export default function Login() {
             </TouchableOpacity>
           </View>
 
-          {/* Remember Me & Forgot Password */}
+          {/* Remember Me */}
           <View style={styles.optionsRow}>
             <TouchableOpacity 
               style={styles.rememberContainer}
@@ -281,11 +281,6 @@ const styles = StyleSheet.create({
   rememberText: {
     color: COLORS.gray,
     fontSize: 14,
-  },
-  forgotText: {
-    color: COLORS.skyBlue,
-    fontSize: 14,
-    fontWeight: '600',
   },
   loginButton: {
     backgroundColor: COLORS.midnightBlue,
