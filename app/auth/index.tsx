@@ -1,15 +1,15 @@
 import React, { useState } from 'react';
-import { 
-  View, 
-  Text, 
-  TextInput, 
-  TouchableOpacity, 
-  StyleSheet, 
-  SafeAreaView, 
-  KeyboardAvoidingView, 
+import {
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  StyleSheet,
+  SafeAreaView,
+  KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
-  Alert
+  Alert,
 } from 'react-native';
 import { useRouter, Stack } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -20,7 +20,7 @@ const COLORS = {
   skyBlue: '#20ADF5',
   midnightBlue: '#1A2E46',
   gray: '#989898',
-  white: '#FFFFFF'
+  white: '#FFFFFF',
 };
 
 export default function Login() {
@@ -29,7 +29,7 @@ export default function Login() {
   const [rememberMe, setRememberMe] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  
+
   const { login } = useAuth();
   const router = useRouter();
 
@@ -38,18 +38,13 @@ export default function Login() {
       Alert.alert('Error', 'Por favor, ingresa tu correo y contraseña');
       return;
     }
-    
+
     setIsLoading(true);
     try {
-      // Asegúrate de que login devuelva { role: 'parent' | 'child', ... }
       const userData = await login(email, password);
-      
-      // Navegación según el rol parent | child
-      if (userData && userData.role === 'parent') {
-        router.replace('../users/index');
-      } else {
-        router.replace('../users/index');
-      }
+
+      // Independientemente del rol, envía a /users/index
+      router.replace('../users/index');
     } catch (error: any) {
       let errorMessage = 'Error al iniciar sesión';
       if (error.code === 'auth/user-not-found') {
@@ -69,34 +64,29 @@ export default function Login() {
 
   return (
     <SafeAreaView style={styles.container}>
-      <KeyboardAvoidingView 
+      <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.keyboardView}
       >
-        <Stack.Screen 
-          options={{ 
-            headerShown: false,
-          }} 
-        />
-        
-        {/* Header */}
+        <Stack.Screen options={{ headerShown: false }} />
+
+        {/* Header sin botón back */}
         <View style={styles.header}>
-          <TouchableOpacity 
-            style={styles.backButton} 
-            onPress={() => router.back()}
-          >
-            <Ionicons name="chevron-back" size={24} color={COLORS.white} />
-          </TouchableOpacity>
           <Text style={styles.headerTitle}>Login</Text>
         </View>
 
         {/* Content */}
         <View style={styles.content}>
           <Text style={styles.title}>Login to Access Your Travel Tickets</Text>
-          
+
           {/* Email Input */}
           <View style={styles.inputContainer}>
-            <Ionicons name="mail-outline" size={20} color={COLORS.gray} style={styles.inputIcon} />
+            <Ionicons
+              name="mail-outline"
+              size={20}
+              color={COLORS.gray}
+              style={styles.inputIcon}
+            />
             <TextInput
               style={styles.input}
               placeholder="Enter your email"
@@ -110,7 +100,12 @@ export default function Login() {
 
           {/* Password Input */}
           <View style={styles.inputContainer}>
-            <Ionicons name="lock-closed-outline" size={20} color={COLORS.gray} style={styles.inputIcon} />
+            <Ionicons
+              name="lock-closed-outline"
+              size={20}
+              color={COLORS.gray}
+              style={styles.inputIcon}
+            />
             <TextInput
               style={styles.input}
               placeholder="Enter your password"
@@ -119,37 +114,44 @@ export default function Login() {
               onChangeText={setPassword}
               secureTextEntry={!showPassword}
             />
-            <TouchableOpacity 
-              onPress={() => setShowPassword(!showPassword)} 
+            <TouchableOpacity
+              onPress={() => setShowPassword(!showPassword)}
               style={styles.eyeIcon}
             >
-              <Ionicons 
-                name={showPassword ? "eye-outline" : "eye-off-outline"} 
-                size={20} 
-                color={COLORS.gray} 
+              <Ionicons
+                name={showPassword ? 'eye-outline' : 'eye-off-outline'}
+                size={20}
+                color={COLORS.gray}
               />
             </TouchableOpacity>
           </View>
 
           {/* Remember Me */}
           <View style={styles.optionsRow}>
-            <TouchableOpacity 
+            <TouchableOpacity
               style={styles.rememberContainer}
               onPress={() => setRememberMe(!rememberMe)}
             >
-              <View style={[
-                styles.checkbox,
-                rememberMe && { backgroundColor: COLORS.skyBlue, borderColor: COLORS.skyBlue }
-              ]}>
-                {rememberMe && <Ionicons name="checkmark" size={16} color={COLORS.white} />}
+              <View
+                style={[
+                  styles.checkbox,
+                  rememberMe && {
+                    backgroundColor: COLORS.skyBlue,
+                    borderColor: COLORS.skyBlue,
+                  },
+                ]}
+              >
+                {rememberMe && (
+                  <Ionicons name="checkmark" size={16} color={COLORS.white} />
+                )}
               </View>
               <Text style={styles.rememberText}>Remember me</Text>
             </TouchableOpacity>
           </View>
 
           {/* Login Button */}
-          <TouchableOpacity 
-            style={styles.loginButton} 
+          <TouchableOpacity
+            style={styles.loginButton}
             onPress={handleLogin}
             disabled={isLoading}
           >
@@ -169,12 +171,20 @@ export default function Login() {
 
           <View style={styles.socialButtonsContainer}>
             <TouchableOpacity style={styles.socialButton}>
-              <Ionicons name="logo-google" size={20} color={COLORS.midnightBlue} />
+              <Ionicons
+                name="logo-google"
+                size={20}
+                color={COLORS.midnightBlue}
+              />
               <Text style={styles.socialButtonText}>Google</Text>
             </TouchableOpacity>
 
             <TouchableOpacity style={styles.socialButton}>
-              <Ionicons name="logo-facebook" size={20} color={COLORS.midnightBlue} />
+              <Ionicons
+                name="logo-facebook"
+                size={20}
+                color={COLORS.midnightBlue}
+              />
               <Text style={styles.socialButtonText}>Facebook</Text>
             </TouchableOpacity>
           </View>
@@ -205,16 +215,7 @@ const styles = StyleSheet.create({
     paddingTop: Platform.OS === 'android' ? 40 : 10,
     paddingBottom: 15,
     paddingHorizontal: 20,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  backButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 10,
+    alignItems: 'center', // centramos el título porque ya no hay back button
   },
   headerTitle: {
     color: COLORS.white,
@@ -346,5 +347,5 @@ const styles = StyleSheet.create({
     color: COLORS.skyBlue,
     fontSize: 14,
     fontWeight: '600',
-  }
+  },
 });
