@@ -1,236 +1,786 @@
-import { useRouter } from 'expo-router';
-import React, { useState } from "react";
-import { View, TouchableOpacity, StyleSheet, Text, Dimensions, SafeAreaView, StatusBar } from "react-native";
-import { Ionicons } from '@expo/vector-icons';
+import React, { useState, useEffect } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  Switch,
+  ScrollView,
+  Modal,
+  TextInput,
+  Alert,
+  ActivityIndicator
+} from 'react-native';
+import { BleManager, Device } from 'react-native-ble-plx';
+import Slider from 'react-native-slider';
+import { useAuth } from '@/context/AuthContext';
 
-// Obtener dimensiones del dispositivo para diseño responsive
-const { width, height } = Dimensions.get('window');
+// Define the service and characteristic UUIDs for ESP32 communication
+const SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
+const CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
 
-// Paleta de colores
-const COLORS = {
-  skyBlue: '#20ADF5',
-  midnightBlue: '#1A2E46',
-  gray: '#989898',
-  white: '#FFFFFF'
-};
+// BLE Manager instance
+const bleManager = new BleManager();
 
-export default function Index() {
-  const [currentSlide, setCurrentSlide] = useState(0);
-  const router = useRouter();
+const HomeScreen: React.FC = () => {
+  // Auth context for user role
+  const { userData } = useAuth();
+  const userRole = userData?.role || 'child';
   
-  // Datos de los slides con títulos y descripciones
-  const slides = [
-    {
-      title: "Bienvenido a Rutiq",
-      description: "Tu compañero de viaje en transporte público",
-      icon: 'bus',
-      iconSize: 100
-    },
-    {
-      title: "Compra tus pasajes",
-      description: "Compra tu pasaje de bus con anticipación, sin filas ni complicaciones",
-      icon: 'ticket',
-      iconSize: 100
-    },
-    {
-      title: "Rastreo en tiempo real",
-      description: "Consulta en tiempo real por dónde va tu bus y evita esperas innecesarias en el paradero",
-      icon: 'location',
-      iconSize: 100
-    },
-    {
-      title: "Planifica tus rutas",
-      description: "Planea tus rutas y conoce qué bus tomar",
-      icon: 'map',
-      iconSize: 100
-    }
-  ];
+  // State variables
+  const [temperature, setTemperature] = useState(23.2);
+  const [humidity, setHumidity] = useState(95.0);
+  const [motion, setMotion] = useState(false);
+  const [isConnected, setIsConnected] = useState(false);
+  const [connectedDevice, setConnectedDevice] = useState<Device | null>(null);
+  const [logs, setLogs] = useState<string[]>([]);
+  const [isScanning, setIsScanning] = useState(false);
+  const [isPinModalVisible, setIsPinModalVisible] = useState(false);
+  const [pin, setPin] = useState('');
+  const [lightStates, setLightStates] = useState({
+    bathroom: false,
+    mainRoom: false,
+    secondaryRoom: false,
+    guestRoom: false,
+  });
+  const [lightIntensities, setLightIntensities] = useState({
+    bathroom: 100,
+    mainRoom: 100,
+    secondaryRoom: 100,
+    guestRoom: 100,
+  });
+  const [expandedLight, setExpandedLight] = useState<string | null>(null);
 
-  // Función para navegar a la pantalla de autenticación
-  const navigateToAuth = () => {
-    router.push('/auth');
+  // Connect to ESP32 via BLE
+  const scanAndConnect = async () => {
+    if (isScanning) return;
+    
+    try {
+      setIsScanning(true);
+      addLog("Buscando dispositivo ESP32...");
+
+      // Start scanning for devices
+      bleManager.startDeviceScan(
+        [SERVICE_UUID], 
+        null, 
+        (error, device) => {
+          if (error) {
+            addLog(`Error al escanear: ${error.message}`);
+            setIsScanning(false);
+            return;
+          }
+          
+          if (device && device.name === "ESP32_IoT") {
+            bleManager.stopDeviceScan();
+            
+            // Connect to the device
+            addLog(`Dispositivo ESP32 encontrado: ${device.name}`);
+            connectToDevice(device);
+          }
+        }
+      );
+      
+      // Stop scanning after 10 seconds
+      setTimeout(() => {
+        bleManager.stopDeviceScan();
+        setIsScanning(false);
+        addLog("Búsqueda de dispositivos finalizada");
+      }, 10000);
+      
+    } catch (error) {
+      addLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
+      setIsScanning(false);
+    }
   };
 
-  // Función para avanzar al siguiente slide
-  const handleNext = () => {
-    if (currentSlide < slides.length - 1) {
-      setCurrentSlide(currentSlide + 1);
+  // Connect to a discovered device
+  const connectToDevice = async (device: Device) => {
+    try {
+      addLog(`Conectando a ${device.name}...`);
+      const connectedDevice = await device.connect();
+      const deviceWithServices = await connectedDevice.discoverAllServicesAndCharacteristics();
+      
+      setConnectedDevice(deviceWithServices);
+      setIsConnected(true);
+      setIsScanning(false);
+      addLog(`Conectado a ${device.name}`);
+      
+      // Subscribe to notifications
+      subscribeToNotifications(deviceWithServices);
+      
+    } catch (error) {
+      addLog(`Error al conectar: ${error instanceof Error ? error.message : String(error)}`);
+      setIsConnected(false);
+      setIsScanning(false);
     }
   };
-
-  // Renderizar indicadores de posición (dots)
-  const renderDots = () => {
+  
+  // Send command to ESP32
+  const sendCommand = async (command: string) => {
+    if (!connectedDevice || !isConnected) {
+      addLog("No hay conexión con ESP32");
+      return;
+    }
+    
+    try {
+      const encoder = new TextEncoder();
+      const data = encoder.encode(command);
+      
+      await connectedDevice.writeCharacteristicWithResponseForService(
+        SERVICE_UUID,
+        CHARACTERISTIC_UUID,
+        btoa(String.fromCharCode.apply(null, Array.from(data)))
+      );
+      
+      addLog(`Comando enviado: ${command}`);
+    } catch (error) {
+      addLog(`Error al enviar comando: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+  
+  // Subscribe to BLE notifications
+  const subscribeToNotifications = (device: Device) => {
+    if (!device) return;
+    
+    device.monitorCharacteristicForService(
+      SERVICE_UUID,
+      CHARACTERISTIC_UUID,
+      (error, characteristic) => {
+        if (error) {
+          addLog(`Error en notificación: ${error.message}`);
+          return;
+        }
+        
+        if (characteristic?.value) {
+          const decoder = new TextDecoder('utf-8');
+          const data = atob(characteristic.value);
+          const decodedValue = decoder.decode(Uint8Array.from(data, c => c.charCodeAt(0)));
+          
+          handleReceivedData(decodedValue);
+        }
+      }
+    );
+    
+    addLog("Suscrito a notificaciones de ESP32");
+  };
+  
+  // Handle data received from ESP32
+  const handleReceivedData = (data: string) => {
+    try {
+      const parsedData = JSON.parse(data);
+      
+      if (parsedData.temperature) {
+        setTemperature(parsedData.temperature);
+      }
+      
+      if (parsedData.humidity) {
+        setHumidity(parsedData.humidity);
+      }
+      
+      if (parsedData.motion !== undefined) {
+        setMotion(parsedData.motion);
+      }
+      
+      if (parsedData.log) {
+        addLog(parsedData.log);
+      }
+    } catch (error) {
+      addLog(`Error al procesar datos: ${data}`);
+    }
+  };
+  
+  // Add log entry
+  const addLog = (message: string) => {
+    const timestamp = new Date().toISOString().substring(11, 19);
+    const entry = `[${timestamp}] ${message}`;
+    setLogs(prevLogs => [entry, ...prevLogs.slice(0, 9)]);
+  };
+  
+  // Verify PIN
+  const verifyPIN = () => {
+    if (pin === '123456') {
+      setIsPinModalVisible(false);
+      sendCommand('ACCESS:GRANTED');
+      addLog('Acceso concedido');
+    } else {
+      Alert.alert('Error', 'PIN incorrecto');
+      sendCommand('ACCESS:DENIED');
+      addLog('Acceso denegado');
+    }
+    setPin('');
+  };
+  
+  // Toggle light state
+  const toggleLight = (room: string) => {
+    if (userRole !== 'parent' && userRole !== 'child') {
+      Alert.alert('Acceso denegado', 'No tienes permiso para controlar las luces');
+      return;
+    }
+    
+    setLightStates(prev => {
+      const newState = { ...prev, [room]: !prev[room] };
+      sendCommand(`LIGHT:${room.toUpperCase()}:${newState[room] ? 'ON' : 'OFF'}`);
+      addLog(`${newState[room] ? 'Encendido' : 'Apagado'} LED ${room}`);
+      return newState;
+    });
+  };
+  
+  // Change light intensity
+  const changeLightIntensity = (room: string, value: number) => {
+    if (userRole !== 'parent' && userRole !== 'child') {
+      Alert.alert('Acceso denegado', 'No tienes permiso para controlar las luces');
+      return;
+    }
+    
+    const intensity = Math.round(value);
+    setLightIntensities(prev => ({ ...prev, [room]: intensity }));
+    sendCommand(`LIGHT:${room.toUpperCase()}:INTENSITY:${intensity}`);
+    addLog(`Intensidad LED ${room}: ${intensity}%`);
+  };
+  
+  // Control blinds
+  const controlBlinds = (action: string) => {
+    if (userRole !== 'parent' && userRole !== 'child') {
+      Alert.alert('Acceso denegado', 'No tienes permiso para controlar las persianas');
+      return;
+    }
+    
+    sendCommand(`BLINDS:${action}`);
+    addLog(`Persiana: ${action}`);
+  };
+  
+  // Control alarm
+  const controlAlarm = (action: string) => {
+    if (userRole !== 'parent') {
+      Alert.alert('Acceso denegado', 'Solo los padres pueden controlar la alarma');
+      return;
+    }
+    
+    sendCommand(`ALARM:${action}`);
+    addLog(`Alarma: ${action}`);
+  };
+  
+  // Expand/collapse light control
+  const toggleLightExpand = (room: string) => {
+    setExpandedLight(expandedLight === room ? null : room);
+  };
+  
+  // Render numeric keypad button
+  const renderKeypadButton = (number: string) => {
     return (
-      <View style={styles.dotsContainer}>
-        {slides.map((_, index) => (
-          <View
-            key={index}
-            style={[
-              styles.dot,
-              { backgroundColor: index === currentSlide ? COLORS.skyBlue : '#D9D9D9' }
-            ]}
-          />
-        ))}
-      </View>
+      <TouchableOpacity 
+        style={styles.keypadButton} 
+        onPress={() => setPin(prev => prev + number)}
+      >
+        <Text style={styles.keypadButtonText}>{number}</Text>
+      </TouchableOpacity>
     );
   };
 
-  // Función para renderizar el icono correcto
-  const renderIcon = () => {
-    const iconName = slides[currentSlide].icon;
-    let iconComponent;
-    
-    switch(iconName) {
-      case 'bus':
-        iconComponent = <Ionicons name="bus" size={100} color="#000000" />;
-        break;
-      case 'ticket':
-        iconComponent = <Ionicons name="ticket" size={100} color="#000000" />;
-        break;
-      case 'location':
-        iconComponent = <Ionicons name="location" size={100} color="#000000" />;
-        break;
-      case 'map':
-        iconComponent = <Ionicons name="map" size={100} color="#000000" />;
-        break;
-      default:
-        iconComponent = <Ionicons name="help-circle" size={100} color="#000000" />;
-    }
-    
-    return iconComponent;
-  };
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (connectedDevice) {
+        connectedDevice.cancelConnection();
+      }
+      bleManager.destroy();
+    };
+  }, [connectedDevice]);
 
   return (
-    <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="light-content" />
-      
-      <View style={styles.slideContainer}>
-        {/* Top blue section with icon */}
-        <View style={styles.topSection}>
-          {renderIcon()}
+    <View style={styles.container}>
+      {/* Header with connection status */}
+      <View style={styles.header}>
+        <View style={styles.connectionStatus}>
+          <Text style={styles.connectionText}>
+            {isConnected ? "Conectado a ESP32" : "Desconectado"}
+          </Text>
+          <View style={[
+            styles.statusIndicator, 
+            { backgroundColor: isConnected ? '#4CAF50' : '#F44336' }
+          ]} />
         </View>
+        <TouchableOpacity 
+          style={styles.connectButton} 
+          onPress={scanAndConnect}
+          disabled={isConnected || isScanning}
+        >
+          <Text style={styles.buttonText}>
+            {isScanning ? "Buscando..." : isConnected ? "Conectado" : "Conectar"}
+          </Text>
+          {isScanning && <ActivityIndicator color="#fff" size="small" />}
+        </TouchableOpacity>
+      </View>
+      
+      {/* Sensor readings */}
+      <View style={styles.sensorPanel}>
+        <Text style={styles.sensorText}>Temperatura: {temperature.toFixed(1)} °C</Text>
+        <Text style={styles.sensorText}>Humedad: {humidity.toFixed(1)} %</Text>
+        <Text style={styles.sensorText}>Movimiento: {motion ? 'Sí' : 'No'}</Text>
+      </View>
+      
+      {/* Blinds control */}
+      <View style={styles.controlRow}>
+        <TouchableOpacity 
+          style={styles.controlButton} 
+          onPress={() => controlBlinds('UP')}
+        >
+          <Text style={styles.buttonText}>Subir Persiana (5s)</Text>
+        </TouchableOpacity>
+        <TouchableOpacity 
+          style={styles.controlButton} 
+          onPress={() => controlBlinds('DOWN')}
+        >
+          <Text style={styles.buttonText}>Bajar Persiana (5s)</Text>
+        </TouchableOpacity>
+      </View>
+      
+      <View style={styles.controlRow}>
+        <TouchableOpacity 
+          style={[styles.controlButton, styles.fullWidthButton]} 
+          onPress={() => controlBlinds('STOP')}
+        >
+          <Text style={styles.buttonText}>Detener Persiana</Text>
+        </TouchableOpacity>
+      </View>
+      
+      {/* Alarm control - only for parent */}
+      {userRole === 'parent' && (
+        <View style={styles.controlRow}>
+          <TouchableOpacity 
+            style={styles.controlButton} 
+            onPress={() => controlAlarm('ACTIVATE')}
+          >
+            <Text style={styles.buttonText}>Activar Alarma</Text>
+          </TouchableOpacity>
+          <TouchableOpacity 
+            style={styles.controlButton} 
+            onPress={() => controlAlarm('DEACTIVATE')}
+          >
+            <Text style={styles.buttonText}>Desactivar Alarma</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+      
+      {/* Light controls */}
+      <View style={styles.lightsContainer}>
+        {/* Bathroom */}
+        <TouchableOpacity 
+          style={[
+            styles.lightBox, 
+            expandedLight === 'bathroom' && styles.expandedLightBox
+          ]} 
+          onPress={() => toggleLightExpand('bathroom')}
+        >
+          <Text style={styles.lightTitle}>Baño</Text>
+          <Switch
+            value={lightStates.bathroom}
+            onValueChange={() => toggleLight('bathroom')}
+            trackColor={{ false: '#767577', true: '#81b0ff' }}
+            thumbColor={lightStates.bathroom ? '#f5dd4b' : '#f4f3f4'}
+          />
+          {expandedLight === 'bathroom' && (
+            <View style={styles.intensityControl}>
+              <Text style={styles.intensityText}>
+                Intensidad: {lightIntensities.bathroom}%
+              </Text>
+              <Slider
+                value={lightIntensities.bathroom}
+                onValueChange={(value) => changeLightIntensity('bathroom', value)}
+                minimumValue={0}
+                maximumValue={100}
+                step={1}
+                minimumTrackTintColor="#81b0ff"
+                maximumTrackTintColor="#000000"
+                thumbTintColor="#f5dd4b"
+                style={styles.slider}
+              />
+            </View>
+          )}
+        </TouchableOpacity>
         
-        {/* Content section */}
-        <View style={styles.contentSection}>
-          <Text style={styles.title}>{slides[currentSlide].title}</Text>
-          <Text style={styles.description}>{slides[currentSlide].description}</Text>
-          
-          {renderDots()}
-          
-          <View style={styles.navigationContainer}>
-            {currentSlide < slides.length - 1 ? (
-              <>
-                <TouchableOpacity onPress={handleNext} style={styles.nextButton}>
-                  <Text style={styles.nextButtonText}>Siguiente</Text>
+        {/* Main Room */}
+        <TouchableOpacity 
+          style={[
+            styles.lightBox, 
+            expandedLight === 'mainRoom' && styles.expandedLightBox
+          ]} 
+          onPress={() => toggleLightExpand('mainRoom')}
+        >
+          <Text style={styles.lightTitle}>Habitación Principal</Text>
+          <Switch
+            value={lightStates.mainRoom}
+            onValueChange={() => toggleLight('mainRoom')}
+            trackColor={{ false: '#767577', true: '#81b0ff' }}
+            thumbColor={lightStates.mainRoom ? '#f5dd4b' : '#f4f3f4'}
+          />
+          {expandedLight === 'mainRoom' && (
+            <View style={styles.intensityControl}>
+              <Text style={styles.intensityText}>
+                Intensidad: {lightIntensities.mainRoom}%
+              </Text>
+              <Slider
+                value={lightIntensities.mainRoom}
+                onValueChange={(value) => changeLightIntensity('mainRoom', value)}
+                minimumValue={0}
+                maximumValue={100}
+                step={1}
+                minimumTrackTintColor="#81b0ff"
+                maximumTrackTintColor="#000000"
+                thumbTintColor="#f5dd4b"
+                style={styles.slider}
+              />
+            </View>
+          )}
+        </TouchableOpacity>
+        
+        {/* Secondary Room */}
+        <TouchableOpacity 
+          style={[
+            styles.lightBox, 
+            expandedLight === 'secondaryRoom' && styles.expandedLightBox
+          ]} 
+          onPress={() => toggleLightExpand('secondaryRoom')}
+        >
+          <Text style={styles.lightTitle}>Habitación Secundaria</Text>
+          <Switch
+            value={lightStates.secondaryRoom}
+            onValueChange={() => toggleLight('secondaryRoom')}
+            trackColor={{ false: '#767577', true: '#81b0ff' }}
+            thumbColor={lightStates.secondaryRoom ? '#f5dd4b' : '#f4f3f4'}
+          />
+          {expandedLight === 'secondaryRoom' && (
+            <View style={styles.intensityControl}>
+              <Text style={styles.intensityText}>
+                Intensidad: {lightIntensities.secondaryRoom}%
+              </Text>
+              <Slider
+                value={lightIntensities.secondaryRoom}
+                onValueChange={(value) => changeLightIntensity('secondaryRoom', value)}
+                minimumValue={0}
+                maximumValue={100}
+                step={1}
+                minimumTrackTintColor="#81b0ff"
+                maximumTrackTintColor="#000000"
+                thumbTintColor="#f5dd4b"
+                style={styles.slider}
+              />
+            </View>
+          )}
+        </TouchableOpacity>
+        
+        {/* Guest Room */}
+        <TouchableOpacity 
+          style={[
+            styles.lightBox, 
+            expandedLight === 'guestRoom' && styles.expandedLightBox
+          ]} 
+          onPress={() => toggleLightExpand('guestRoom')}
+        >
+          <Text style={styles.lightTitle}>Habitación de Invitados</Text>
+          <Switch
+            value={lightStates.guestRoom}
+            onValueChange={() => toggleLight('guestRoom')}
+            trackColor={{ false: '#767577', true: '#81b0ff' }}
+            thumbColor={lightStates.guestRoom ? '#f5dd4b' : '#f4f3f4'}
+          />
+          {expandedLight === 'guestRoom' && (
+            <View style={styles.intensityControl}>
+              <Text style={styles.intensityText}>
+                Intensidad: {lightIntensities.guestRoom}%
+              </Text>
+              <Slider
+                value={lightIntensities.guestRoom}
+                onValueChange={(value) => changeLightIntensity('guestRoom', value)}
+                minimumValue={0}
+                maximumValue={100}
+                step={1}
+                minimumTrackTintColor="#81b0ff"
+                maximumTrackTintColor="#000000"
+                thumbTintColor="#f5dd4b"
+                style={styles.slider}
+              />
+            </View>
+          )}
+        </TouchableOpacity>
+      </View>
+      
+      {/* Enter Home button */}
+      <TouchableOpacity 
+        style={styles.enterButton} 
+        onPress={() => setIsPinModalVisible(true)}
+      >
+        <Text style={styles.buttonText}>Ingresar a Casa</Text>
+      </TouchableOpacity>
+      
+      {/* Log panel */}
+      <View style={styles.logPanel}>
+        <Text style={styles.logTitle}>Registro de Actividades:</Text>
+        <ScrollView style={styles.logScroll}>
+          {logs.map((log, index) => (
+            <Text key={index} style={styles.logEntry}>{log}</Text>
+          ))}
+        </ScrollView>
+      </View>
+      
+      {/* PIN Modal */}
+      <Modal
+        visible={isPinModalVisible}
+        transparent={true}
+        animationType="slide"
+      >
+        <View style={styles.modalContainer}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Ingrese el PIN</Text>
+            <TextInput
+              style={styles.pinInput}
+              value={pin}
+              editable={false}
+              placeholder="******"
+              secureTextEntry
+            />
+            
+            <View style={styles.keypad}>
+              <View style={styles.keypadRow}>
+                {renderKeypadButton('1')}
+                {renderKeypadButton('2')}
+                {renderKeypadButton('3')}
+              </View>
+              <View style={styles.keypadRow}>
+                {renderKeypadButton('4')}
+                {renderKeypadButton('5')}
+                {renderKeypadButton('6')}
+              </View>
+              <View style={styles.keypadRow}>
+                {renderKeypadButton('7')}
+                {renderKeypadButton('8')}
+                {renderKeypadButton('9')}
+              </View>
+              <View style={styles.keypadRow}>
+                <TouchableOpacity 
+                  style={styles.keypadButton} 
+                  onPress={() => setPin('')}
+                >
+                  <Text style={styles.keypadButtonText}>C</Text>
                 </TouchableOpacity>
-                
-                <TouchableOpacity onPress={navigateToAuth} style={styles.skipButton}>
-                  <Text style={styles.skipText}>Omitir</Text>
+                {renderKeypadButton('0')}
+                <TouchableOpacity 
+                  style={[styles.keypadButton, styles.enterPinButton]} 
+                  onPress={verifyPIN}
+                >
+                  <Text style={styles.keypadButtonText}>✓</Text>
                 </TouchableOpacity>
-              </>
-            ) : (
-              <TouchableOpacity onPress={navigateToAuth} style={styles.getStartedButton}>
-                <Text style={styles.getStartedButtonText}>¡Comenzar!</Text>
-              </TouchableOpacity>
-            )}
+              </View>
+            </View>
+            
+            <TouchableOpacity 
+              style={styles.cancelButton}
+              onPress={() => setIsPinModalVisible(false)}
+            >
+              <Text style={styles.buttonText}>Cancelar</Text>
+            </TouchableOpacity>
           </View>
         </View>
-      </View>
-    </SafeAreaView>
+      </Modal>
+    </View>
   );
-}
+};
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: COLORS.white,
+    backgroundColor: '#3f51b5',
+    padding: 16,
   },
-  slideContainer: {
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  connectionStatus: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  connectionText: {
+    color: '#fff',
+    fontSize: 16,
+    marginRight: 8,
+  },
+  statusIndicator: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+  },
+  connectButton: {
+    backgroundColor: '#7986cb',
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 4,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  buttonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: 'bold',
+    marginRight: 8,
+  },
+  sensorPanel: {
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    borderRadius: 8,
+    padding: 16,
+    marginBottom: 16,
+  },
+  sensorText: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    marginVertical: 4,
+  },
+  controlRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+  controlButton: {
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    borderRadius: 8,
+    padding: 16,
     flex: 1,
+    marginHorizontal: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  topSection: {
-    backgroundColor: COLORS.skyBlue,
-    height: '45%',
+  fullWidthButton: {
+    marginHorizontal: 0,
+  },
+  lightsContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+  lightBox: {
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    borderRadius: 8,
+    padding: 16,
+    width: '48%',
+    marginBottom: 16,
+    alignItems: 'center',
+  },
+  expandedLightBox: {
+    width: '100%',
+    height: 'auto',
+  },
+  lightTitle: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: 'bold',
+    marginBottom: 8,
+  },
+  intensityControl: {
+    width: '100%',
+    marginTop: 16,
+  },
+  intensityText: {
+    color: '#fff',
+    fontSize: 14,
+    textAlign: 'center',
+    marginBottom: 8,
+  },
+  slider: {
+    width: '100%',
+    height: 40,
+  },
+  enterButton: {
+    backgroundColor: '#ff9800',
+    borderRadius: 8,
+    padding: 16,
+    marginBottom: 16,
+    alignItems: 'center',
+  },
+  logPanel: {
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    borderRadius: 8,
+    padding: 8,
+    maxHeight: 200,
+  },
+  logTitle: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: 'bold',
+    marginBottom: 8,
+  },
+  logScroll: {
+    flexGrow: 0,
+  },
+  logEntry: {
+    color: '#fff',
+    fontSize: 12,
+    marginBottom: 4,
+  },
+  modalContainer: {
+    flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    borderBottomLeftRadius: 30,
-    borderBottomRightRadius: 30,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
   },
-  contentSection: {
-    flex: 1,
-    paddingHorizontal: 30,
-    paddingTop: 40,
-    justifyContent: 'flex-start',
+  modalContent: {
+    backgroundColor: '#fff',
+    borderRadius: 8,
+    padding: 16,
+    width: '80%',
     alignItems: 'center',
   },
-  title: {
-    fontSize: 26,
+  modalTitle: {
+    fontSize: 18,
     fontWeight: 'bold',
     marginBottom: 16,
-    textAlign: 'center',
-    color: COLORS.midnightBlue,
   },
-  description: {
-    fontSize: 16,
-    textAlign: 'center',
-    marginBottom: 30,
-    color: COLORS.gray,
-    lineHeight: 22,
-  },
-  dotsContainer: {
-    flexDirection: 'row',
-    marginBottom: 40,
-  },
-  dot: {
-    width: 8,
-    height: 8,
+  pinInput: {
+    borderWidth: 1,
+    borderColor: '#ccc',
     borderRadius: 4,
-    marginHorizontal: 5,
+    padding: 8,
+    width: '100%',
+    fontSize: 18,
+    textAlign: 'center',
+    marginBottom: 16,
+    letterSpacing: 8,
   },
-  navigationContainer: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
+  keypad: {
     width: '100%',
   },
-  nextButton: {
-    backgroundColor: COLORS.skyBlue,
-    paddingVertical: 12,
-    paddingHorizontal: 30,
-    borderRadius: 25,
-    marginRight: 15,
-    minWidth: 130,
+  keypadRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  keypadButton: {
+    backgroundColor: '#f0f0f0',
+    borderRadius: 4,
+    width: '30%',
+    aspectRatio: 1,
     alignItems: 'center',
+    justifyContent: 'center',
   },
-  nextButtonText: {
-    color: COLORS.white,
-    fontSize: 16,
-    fontWeight: '600',
+  keypadButtonText: {
+    fontSize: 24,
+    fontWeight: 'bold',
   },
-  skipButton: {
-    paddingVertical: 12,
-    paddingHorizontal: 30,
-    borderRadius: 25,
-    borderWidth: 1,
-    borderColor: '#E0E0E0',
-    minWidth: 130,
+  enterPinButton: {
+    backgroundColor: '#4CAF50',
+  },
+  cancelButton: {
+    backgroundColor: '#F44336',
+    borderRadius: 4,
+    padding: 8,
+    width: '100%',
     alignItems: 'center',
-  },
-  skipText: {
-    color: COLORS.gray,
-    fontSize: 16,
-  },
-  getStartedButton: {
-    backgroundColor: COLORS.skyBlue,
-    paddingVertical: 12,
-    paddingHorizontal: 40,
-    borderRadius: 25,
-    minWidth: 200,
-    alignItems: 'center',
-  },
-  getStartedButtonText: {
-    color: COLORS.white,
-    fontSize: 16,
-    fontWeight: '600',
+    marginTop: 16,
   },
 });
+
+export default HomeScreen;
