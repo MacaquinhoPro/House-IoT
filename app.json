@@ -1,0 +1,58 @@
+{
+  "expo": {
+    "extra": {
+      "eas": {
+        "projectId": "0fc3cd8c-bf64-4747-aec7-26839819adbf"
+      },
+      "router": {
+        "origin": false
+      }
+    },
+    "name": "bus_ticketing",
+    "slug": "bus_ticketing",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "myapp",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "permissions": [
+        "NOTIFICATIONS"
+      ]
+    },
+    "config": {
+        "googleMaps": {
+          "apiKey": "AIzaSyCZsZ1lmSd6KZjmb-yCPtiPmShUMSAp3xw"
+        }
+      },
+    "web": {
+      "bundler": "metro",
+      "output": "static",
+      "favicon": "./assets/images/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/splash-icon.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "backgroundColor": "#ffffff"
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "owner": "fer44"
+  }
+}
