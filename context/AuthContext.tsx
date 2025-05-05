@@ -4,7 +4,7 @@ import {doc,setDoc,getDoc,updateDoc,deleteDoc,collection,query,where,getDocs} fr
 import { auth, db } from '../utils/FirebaseConfig'; // Asegúrate de tener esta configuración
 
 // Definir tipos
-type UserRole = 'client' | 'driver' | 'handler';
+type UserRole = 'child' | 'parent';
 
 // Interfaz para el usuario en Firestore, ahora con el campo saldo
 export interface UserData {
@@ -13,7 +13,6 @@ export interface UserData {
   apellido: string;
   correo: string;
   role: UserRole;
-  saldo?: number; // Campo de saldo añadido como opcional para compatibilidad con usuarios existentes
 }
 
 // Interfaz para el contexto de autenticación
@@ -35,9 +34,6 @@ interface AuthContextType {
   getUserByEmail: (email: string) => Promise<UserData | null>;
   getUsersByRole: (role: UserRole) => Promise<UserData[]>;
   deleteUser: () => Promise<void>;
-  
-  // Nueva función para actualizar el saldo
-  updateUserBalance: (amount: number) => Promise<void>;
 }
 
 // Crear el contexto
@@ -108,17 +104,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const userCredential = await createUserWithEmailAndPassword(auth, email, password);
       const user = userCredential.user;
       
-      // Guardar datos del usuario en Firestore, ahora con saldo inicial 0
+      // Guardar datos del usuario en Firestore
       await setDoc(doc(db, 'users', user.uid), {
         nombre: userData.nombre,
         apellido: userData.apellido,
         correo: email,
         role: userData.role,
-        saldo: 0 // Inicializar el saldo en 0 para nuevos usuarios
       });
       
       // Actualizar estado local
-      setUserData({ id: user.uid, ...userData, saldo: 0 });
+      setUserData({ id: user.uid, ...userData });
       
     } catch (error) {
       console.error('Error de registro:', error);
@@ -161,40 +156,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setUserData({ ...userData, ...updatedData });
     } catch (error) {
       console.error('Error al actualizar datos del usuario:', error);
-      throw error;
-    }
-  };
-
-  // Nueva función para actualizar el saldo del usuario
-  const updateUserBalance = async (amount: number) => {
-    if (!currentUser || !userData) {
-      throw new Error('No hay usuario autenticado');
-    }
-
-    try {
-      const userRef = doc(db, 'users', currentUser.uid);
-      
-      // Obtener el saldo actual para asegurar que estamos trabajando con el valor más reciente
-      const userDoc = await getDoc(userRef);
-      if (!userDoc.exists()) {
-        throw new Error('Usuario no encontrado');
-      }
-      
-      const currentBalance = userDoc.data().saldo || 0;
-      const newBalance = currentBalance + amount;
-      
-      // No permitir saldos negativos
-      if (newBalance < 0) {
-        throw new Error('Saldo insuficiente');
-      }
-      
-      // Actualizar saldo en Firestore
-      await updateDoc(userRef, { saldo: newBalance });
-      
-      // Actualizar estado local
-      setUserData({ ...userData, saldo: newBalance });
-    } catch (error) {
-      console.error('Error al actualizar saldo del usuario:', error);
       throw error;
     }
   };
@@ -279,8 +240,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     getUserById,
     getUserByEmail,
     getUsersByRole,
-    deleteUser,
-    updateUserBalance // Añadir la nueva función al contexto
+    deleteUser
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
