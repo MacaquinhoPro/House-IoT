@@ -3,14 +3,15 @@ import { getFirestore } from "firebase/firestore";
 import { getAuth } from "firebase/auth";
 
 const firebaseConfig = {
-    apiKey: "AIzaSyCYVcUAhixWRoyWx6-h9RaUh4DhNkBPuNo",
-    authDomain: "ticketing-dam.firebaseapp.com",
-    projectId: "ticketing-dam",
-    storageBucket: "ticketing-dam.firebasestorage.app",
-    messagingSenderId: "932841118187",
-    appId: "1:932841118187:web:11d14f2a925fb18da9a1ae",
-    measurementId: "G-KNFJ8BGCK8"
-  };
+  apiKey: "AIzaSyDT-jK5UX51DG9H7-L7TkjPIZxAEmtl0Gw",
+  authDomain: "iot2-8c12b.firebaseapp.com",
+  databaseURL: "https://iot2-8c12b-default-rtdb.firebaseio.com",
+  projectId: "iot2-8c12b",
+  storageBucket: "iot2-8c12b.firebasestorage.app",
+  messagingSenderId: "223273984250",
+  appId: "1:223273984250:web:c7d761d006a69586fd6943",
+  measurementId: "G-MY84Z15HL6"
+};
 
 // Inicializar Firebase
 const app = initializeApp(firebaseConfig);
