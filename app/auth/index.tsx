@@ -44,7 +44,7 @@ export default function Login() {
       const userData = await login(email, password);
 
       // Independientemente del rol, envía a /users/index
-      router.replace('../users/index');
+      router.replace('../users');
     } catch (error: any) {
       let errorMessage = 'Error al iniciar sesión';
       if (error.code === 'auth/user-not-found') {

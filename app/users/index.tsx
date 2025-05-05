@@ -12,8 +12,9 @@ import {
   ActivityIndicator
 } from 'react-native';
 import { BleManager, Device } from 'react-native-ble-plx';
-import Slider from 'react-native-slider';
-import { useAuth } from '../../context/AuthContext';
+import Slider from '@react-native-community/slider';
+
+import { useAuth } from '@/context/AuthContext';
 
 // Define the service and characteristic UUIDs for ESP32 communication
 const SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
