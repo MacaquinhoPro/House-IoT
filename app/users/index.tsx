@@ -9,21 +9,24 @@ import {
   Modal,
   TextInput,
   Alert,
-  ActivityIndicator
+  ActivityIndicator,
+  Platform,
+  PermissionsAndroid
 } from 'react-native';
 import { BleManager, Device } from 'react-native-ble-plx';
 import Slider from '@react-native-community/slider';
-
+import { Buffer } from 'buffer'; // Añadido para manejar base64 correctamente
 import { useAuth } from '@/context/AuthContext';
 
 // Define the service and characteristic UUIDs for ESP32 communication
 const SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
 const CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
 
-// BLE Manager instance
-const bleManager = new BleManager();
-
+// BLE Manager instance - movido dentro del componente para evitar problemas con hot-reloading
 const HomeScreen: React.FC = () => {
+  // BLE Manager
+  const [bleManager] = useState(() => new BleManager());
+  
   // Auth context for user role
   const { userData } = useAuth();
   const userRole = userData?.role || 'child';
@@ -51,10 +54,44 @@ const HomeScreen: React.FC = () => {
     guestRoom: 100,
   });
   const [expandedLight, setExpandedLight] = useState<string | null>(null);
+  const [scanTimeoutId, setScanTimeoutId] = useState<NodeJS.Timeout | null>(null);
+
+  // Solicitar permisos de Bluetooth
+  const requestBlePermissions = async () => {
+    try {
+      if (Platform.OS === 'android' && Platform.Version >= 23) {
+        const granted = await PermissionsAndroid.requestMultiple([
+          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+          ...(Platform.Version >= 31 ? [
+            PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
+            PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
+          ] : []),
+        ]);
+        
+        const allPermissionsGranted = Object.values(granted).every(
+          value => value === PermissionsAndroid.RESULTS.GRANTED
+        );
+        
+        if (!allPermissionsGranted) {
+          Alert.alert('Permisos requeridos', 'Se necesitan permisos de Bluetooth para conectar con el dispositivo');
+          return false;
+        }
+        return true;
+      }
+      return true;
+    } catch (err) {
+      console.warn(err);
+      return false;
+    }
+  };
 
   // Connect to ESP32 via BLE
   const scanAndConnect = async () => {
     if (isScanning) return;
+    
+    // Verificar permisos primero
+    const hasPermissions = await requestBlePermissions();
+    if (!hasPermissions) return;
     
     try {
       setIsScanning(true);
@@ -82,11 +119,14 @@ const HomeScreen: React.FC = () => {
       );
       
       // Stop scanning after 10 seconds
-      setTimeout(() => {
+      const timeoutId = setTimeout(() => {
         bleManager.stopDeviceScan();
         setIsScanning(false);
         addLog("Búsqueda de dispositivos finalizada");
+        setScanTimeoutId(null);
       }, 10000);
+
+      setScanTimeoutId(timeoutId);
       
     } catch (error) {
       addLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
@@ -124,13 +164,13 @@ const HomeScreen: React.FC = () => {
     }
     
     try {
-      const encoder = new TextEncoder();
-      const data = encoder.encode(command);
+      // Usar Buffer para manejar la conversión a base64 correctamente
+      const data = Buffer.from(command, 'utf-8').toString('base64');
       
       await connectedDevice.writeCharacteristicWithResponseForService(
         SERVICE_UUID,
         CHARACTERISTIC_UUID,
-        btoa(String.fromCharCode.apply(null, Array.from(data)))
+        data
       );
       
       addLog(`Comando enviado: ${command}`);
@@ -143,26 +183,32 @@ const HomeScreen: React.FC = () => {
   const subscribeToNotifications = (device: Device) => {
     if (!device) return;
     
-    device.monitorCharacteristicForService(
-      SERVICE_UUID,
-      CHARACTERISTIC_UUID,
-      (error, characteristic) => {
-        if (error) {
-          addLog(`Error en notificación: ${error.message}`);
-          return;
-        }
-        
-        if (characteristic?.value) {
-          const decoder = new TextDecoder('utf-8');
-          const data = atob(characteristic.value);
-          const decodedValue = decoder.decode(Uint8Array.from(data, c => c.charCodeAt(0)));
+    try {
+      device.monitorCharacteristicForService(
+        SERVICE_UUID,
+        CHARACTERISTIC_UUID,
+        (error, characteristic) => {
+          if (error) {
+            addLog(`Error en notificación: ${error.message}`);
+            return;
+          }
           
-          handleReceivedData(decodedValue);
+          if (characteristic?.value) {
+            try {
+              // Decodificar correctamente usando Buffer
+              const decodedValue = Buffer.from(characteristic.value, 'base64').toString('utf-8');
+              handleReceivedData(decodedValue);
+            } catch (decodeError) {
+              addLog(`Error al decodificar datos: ${decodeError instanceof Error ? decodeError.message : String(decodeError)}`);
+            }
+          }
         }
-      }
-    );
-    
-    addLog("Suscrito a notificaciones de ESP32");
+      );
+      
+      addLog("Suscrito a notificaciones de ESP32");
+    } catch (error) {
+      addLog(`Error al suscribirse: ${error instanceof Error ? error.message : String(error)}`);
+    }
   };
   
   // Handle data received from ESP32
@@ -170,11 +216,11 @@ const HomeScreen: React.FC = () => {
     try {
       const parsedData = JSON.parse(data);
       
-      if (parsedData.temperature) {
+      if (parsedData.temperature !== undefined) {
         setTemperature(parsedData.temperature);
       }
       
-      if (parsedData.humidity) {
+      if (parsedData.humidity !== undefined) {
         setHumidity(parsedData.humidity);
       }
       
@@ -195,6 +241,7 @@ const HomeScreen: React.FC = () => {
     const timestamp = new Date().toISOString().substring(11, 19);
     const entry = `[${timestamp}] ${message}`;
     setLogs(prevLogs => [entry, ...prevLogs.slice(0, 9)]);
+    console.log(entry); // Agregar logs también a la consola para debug
   };
   
   // Verify PIN
@@ -220,14 +267,14 @@ const HomeScreen: React.FC = () => {
     
     setLightStates(prev => {
       const newState = { ...prev, [room]: !prev[room] };
-      sendCommand(`LIGHT:${room.toUpperCase()}:${newState[room as keyof typeof newState] ? 'ON' : 'OFF'}`);
+      sendCommand(`LIGHT:${room.toUpperCase()}:${newState[room] ? 'ON' : 'OFF'}`);
       addLog(`${newState[room] ? 'Encendido' : 'Apagado'} LED ${room}`);
       return newState;
     });
   };
   
   // Change light intensity
-  const changeLightIntensity = (room: string, value: number) => {
+  const changeLightIntensity = (room: keyof typeof lightIntensities, value: number) => {
     if (userRole !== 'parent' && userRole !== 'child') {
       Alert.alert('Acceso denegado', 'No tienes permiso para controlar las luces');
       return;
@@ -272,6 +319,7 @@ const HomeScreen: React.FC = () => {
       <TouchableOpacity 
         style={styles.keypadButton} 
         onPress={() => setPin(prev => prev + number)}
+        key={`key-${number}`}
       >
         <Text style={styles.keypadButtonText}>{number}</Text>
       </TouchableOpacity>
@@ -281,12 +329,28 @@ const HomeScreen: React.FC = () => {
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      if (connectedDevice) {
-        connectedDevice.cancelConnection();
+      // Limpiar timeout de escaneo si existe
+      if (scanTimeoutId) {
+        clearTimeout(scanTimeoutId);
       }
+      
+      // Desconectar dispositivos
+      if (isScanning) {
+        bleManager.stopDeviceScan();
+      }
+      
+      if (connectedDevice) {
+        try {
+          connectedDevice.cancelConnection();
+        } catch (error) {
+          console.log('Error al desconectar:', error);
+        }
+      }
+      
+      // Destruir BLE Manager
       bleManager.destroy();
     };
-  }, [connectedDevice]);
+  }, [connectedDevice, isScanning, scanTimeoutId]);
 
   return (
     <View style={styles.container}>
@@ -302,7 +366,10 @@ const HomeScreen: React.FC = () => {
           ]} />
         </View>
         <TouchableOpacity 
-          style={styles.connectButton} 
+          style={[
+            styles.connectButton,
+            (isConnected || isScanning) && styles.disabledButton
+          ]} 
           onPress={scanAndConnect}
           disabled={isConnected || isScanning}
         >
@@ -325,12 +392,14 @@ const HomeScreen: React.FC = () => {
         <TouchableOpacity 
           style={styles.controlButton} 
           onPress={() => controlBlinds('UP')}
+          disabled={!isConnected}
         >
           <Text style={styles.buttonText}>Subir Persiana (5s)</Text>
         </TouchableOpacity>
         <TouchableOpacity 
           style={styles.controlButton} 
           onPress={() => controlBlinds('DOWN')}
+          disabled={!isConnected}
         >
           <Text style={styles.buttonText}>Bajar Persiana (5s)</Text>
         </TouchableOpacity>
@@ -340,6 +409,7 @@ const HomeScreen: React.FC = () => {
         <TouchableOpacity 
           style={[styles.controlButton, styles.fullWidthButton]} 
           onPress={() => controlBlinds('STOP')}
+          disabled={!isConnected}
         >
           <Text style={styles.buttonText}>Detener Persiana</Text>
         </TouchableOpacity>
@@ -351,12 +421,14 @@ const HomeScreen: React.FC = () => {
           <TouchableOpacity 
             style={styles.controlButton} 
             onPress={() => controlAlarm('ACTIVATE')}
+            disabled={!isConnected}
           >
             <Text style={styles.buttonText}>Activar Alarma</Text>
           </TouchableOpacity>
           <TouchableOpacity 
             style={styles.controlButton} 
             onPress={() => controlAlarm('DEACTIVATE')}
+            disabled={!isConnected}
           >
             <Text style={styles.buttonText}>Desactivar Alarma</Text>
           </TouchableOpacity>
@@ -379,6 +451,7 @@ const HomeScreen: React.FC = () => {
             onValueChange={() => toggleLight('bathroom')}
             trackColor={{ false: '#767577', true: '#81b0ff' }}
             thumbColor={lightStates.bathroom ? '#f5dd4b' : '#f4f3f4'}
+            disabled={!isConnected}
           />
           {expandedLight === 'bathroom' && (
             <View style={styles.intensityControl}>
@@ -395,6 +468,7 @@ const HomeScreen: React.FC = () => {
                 maximumTrackTintColor="#000000"
                 thumbTintColor="#f5dd4b"
                 style={styles.slider}
+                disabled={!isConnected}
               />
             </View>
           )}
@@ -414,6 +488,7 @@ const HomeScreen: React.FC = () => {
             onValueChange={() => toggleLight('mainRoom')}
             trackColor={{ false: '#767577', true: '#81b0ff' }}
             thumbColor={lightStates.mainRoom ? '#f5dd4b' : '#f4f3f4'}
+            disabled={!isConnected}
           />
           {expandedLight === 'mainRoom' && (
             <View style={styles.intensityControl}>
@@ -430,6 +505,7 @@ const HomeScreen: React.FC = () => {
                 maximumTrackTintColor="#000000"
                 thumbTintColor="#f5dd4b"
                 style={styles.slider}
+                disabled={!isConnected}
               />
             </View>
           )}
@@ -449,6 +525,7 @@ const HomeScreen: React.FC = () => {
             onValueChange={() => toggleLight('secondaryRoom')}
             trackColor={{ false: '#767577', true: '#81b0ff' }}
             thumbColor={lightStates.secondaryRoom ? '#f5dd4b' : '#f4f3f4'}
+            disabled={!isConnected}
           />
           {expandedLight === 'secondaryRoom' && (
             <View style={styles.intensityControl}>
@@ -465,6 +542,7 @@ const HomeScreen: React.FC = () => {
                 maximumTrackTintColor="#000000"
                 thumbTintColor="#f5dd4b"
                 style={styles.slider}
+                disabled={!isConnected}
               />
             </View>
           )}
@@ -484,6 +562,7 @@ const HomeScreen: React.FC = () => {
             onValueChange={() => toggleLight('guestRoom')}
             trackColor={{ false: '#767577', true: '#81b0ff' }}
             thumbColor={lightStates.guestRoom ? '#f5dd4b' : '#f4f3f4'}
+            disabled={!isConnected}
           />
           {expandedLight === 'guestRoom' && (
             <View style={styles.intensityControl}>
@@ -500,6 +579,7 @@ const HomeScreen: React.FC = () => {
                 maximumTrackTintColor="#000000"
                 thumbTintColor="#f5dd4b"
                 style={styles.slider}
+                disabled={!isConnected}
               />
             </View>
           )}
@@ -508,8 +588,12 @@ const HomeScreen: React.FC = () => {
       
       {/* Enter Home button */}
       <TouchableOpacity 
-        style={styles.enterButton} 
+        style={[
+          styles.enterButton,
+          !isConnected && styles.disabledButton
+        ]} 
         onPress={() => setIsPinModalVisible(true)}
+        disabled={!isConnected}
       >
         <Text style={styles.buttonText}>Ingresar a Casa</Text>
       </TouchableOpacity>
@@ -620,6 +704,9 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     flexDirection: 'row',
     alignItems: 'center',
+  },
+  disabledButton: {
+    opacity: 0.6,
   },
   buttonText: {
     color: '#fff',
