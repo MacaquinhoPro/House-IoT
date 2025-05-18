@@ -1,21 +1,24 @@
 import { initializeApp } from "firebase/app";
 import { getFirestore } from "firebase/firestore";
 import { getAuth } from "firebase/auth";
+import { getDatabase } from "firebase/database";
 
+// ——— CONFIG DEL PROYECTO ———————————————————————————
 const firebaseConfig = {
-  apiKey: "AIzaSyDT-jK5UX51DG9H7-L7TkjPIZxAEmtl0Gw",
-  authDomain: "iot2-8c12b.firebaseapp.com",
-  databaseURL: "https://iot2-8c12b-default-rtdb.firebaseio.com",
-  projectId: "iot2-8c12b",
-  storageBucket: "iot2-8c12b.firebasestorage.app",
-  messagingSenderId: "223273984250",
-  appId: "1:223273984250:web:c7d761d006a69586fd6943",
-  measurementId: "G-MY84Z15HL6"
+  apiKey: "AIzaSyA4MFl4kh8M65TWlX9GpUu19p4W4qEEqCw",
+  authDomain: "house-iot-e4af8.firebaseapp.com",
+  databaseURL: "https://house-iot-e4af8-default-rtdb.firebaseio.com",
+  projectId: "house-iot-e4af8",
+  storageBucket: "house-iot-e4af8.appspot.com",
+  messagingSenderId: "694245785547",
+  appId: "1:694245785547:web:03d6659077420150d6c04e",
+  measurementId: "G-81JYCHFGR3",
 };
 
-// Inicializar Firebase
-const app = initializeApp(firebaseConfig);
-const db = getFirestore(app);
-const auth = getAuth(app);
+// ——— Inicializar Firebase ———————————————————————————
+const app   = initializeApp(firebaseConfig);
+const db    = getFirestore(app);
+const auth  = getAuth(app);
+const rtdb  = getDatabase(app);
 
-export { db, auth };
+export { db, auth, rtdb };

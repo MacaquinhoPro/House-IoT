@@ -1,12 +1,40 @@
+// context/AuthContext.tsx
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, sendPasswordResetEmail, User as FirebaseUser} from 'firebase/auth';
-import {doc,setDoc,getDoc,updateDoc,deleteDoc,collection,query,where,getDocs} from 'firebase/firestore';
-import { auth, db } from '../utils/FirebaseConfig'; // Asegúrate de tener esta configuración
+import {
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  signOut,
+  sendPasswordResetEmail,
+  User as FirebaseUser,
+} from 'firebase/auth';
+import {
+  doc,
+  setDoc,
+  getDoc,
+  updateDoc,
+  deleteDoc,
+  collection,
+  query,
+  where,
+  getDocs,
+} from 'firebase/firestore';
 
-// Definir tipos
+import { auth, db } from '../utils/FirebaseConfig';        // Firestore y Auth
+import {
+  getDatabase,
+  ref as rtdbRef,
+  set as rtdbSet,
+  update as rtdbUpdate,
+  get as rtdbGet,
+  remove as rtdbRemove,
+} from 'firebase/database';                                // Realtime DB
+
+/* ------------------------------------------------------------------ */
+/*  Tipos                                                              */
+/* ------------------------------------------------------------------ */
 type UserRole = 'child' | 'parent';
 
-// Interfaz para el usuario en Firestore, ahora con el campo saldo
 export interface UserData {
   id?: string;
   nombre: string;
@@ -15,20 +43,23 @@ export interface UserData {
   role: UserRole;
 }
 
-// Interfaz para el contexto de autenticación
 interface AuthContextType {
-  // Estado del usuario
   currentUser: FirebaseUser | null;
   userData: UserData | null;
   loading: boolean;
-  
-  // Funciones de autenticación
-  login: (email: string, password: string) => Promise<UserData | null>;
-  register: (email: string, password: string, userData: UserData) => Promise<void>;
+
+  login: (
+    email: string,
+    password: string
+  ) => Promise<UserData | null>;
+  register: (
+    email: string,
+    password: string,
+    userData: UserData
+  ) => Promise<void>;
   logout: () => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
-  
-  // Funciones CRUD para usuarios
+
   updateUserData: (userData: Partial<UserData>) => Promise<void>;
   getUserById: (id: string) => Promise<UserData | null>;
   getUserByEmail: (email: string) => Promise<UserData | null>;
@@ -36,199 +67,163 @@ interface AuthContextType {
   deleteUser: () => Promise<void>;
 }
 
-// Crear el contexto
-const AuthContext = createContext<AuthContextType | undefined>(undefined);
+/* ------------------------------------------------------------------ */
 
-// Hook para usar el contexto
+const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export const useAuth = () => {
-  const context = useContext(AuthContext);
-  if (context === undefined) {
-    throw new Error('useAuth must be used within an AuthProvider');
-  }
-  return context;
+  const ctx = useContext(AuthContext);
+  if (!ctx) throw new Error('useAuth must be used within AuthProvider');
+  return ctx;
 };
 
-// Proveedor del contexto
-export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+/* ------------------------------------------------------------------ */
+/*  Instancia de Realtime Database                                     */
+/* ------------------------------------------------------------------ */
+const rtdb = getDatabase();
+
+/* ------------------------------------------------------------------ */
+/*  Provider                                                           */
+/* ------------------------------------------------------------------ */
+export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
+  children,
+}) => {
   const [currentUser, setCurrentUser] = useState<FirebaseUser | null>(null);
   const [userData, setUserData] = useState<UserData | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Escuchar cambios en el estado de autenticación
+  /* ---------------- listener de sesión ---------------- */
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       setCurrentUser(user);
-      
+
       if (user) {
-        // Obtener datos del usuario desde Firestore
+        // 1º intentamos Firestore (fuente “maestra”)
         const userDoc = await getDoc(doc(db, 'users', user.uid));
         if (userDoc.exists()) {
-          setUserData({ id: user.uid, ...userDoc.data() as Omit<UserData, 'id'> });
+          setUserData({ id: user.uid, ...userDoc.data() } as UserData);
         } else {
           setUserData(null);
         }
       } else {
         setUserData(null);
       }
-      
       setLoading(false);
     });
-
     return unsubscribe;
   }, []);
 
-  // Iniciar sesión
+  /* ---------------- register --------------------------- */
+  const register = async (
+    email: string,
+    password: string,
+    newUser: UserData
+  ) => {
+    const cred = await createUserWithEmailAndPassword(auth, email, password);
+    const { uid } = cred.user;
+
+    /* Firestore */
+    await setDoc(doc(db, 'users', uid), {
+      nombre: newUser.nombre,
+      apellido: newUser.apellido,
+      correo: email,
+      role: newUser.role,
+    });
+
+    /* RTDB */
+    await rtdbSet(rtdbRef(rtdb, `users/${uid}`), {
+      nombre: newUser.nombre,
+      apellido: newUser.apellido,
+      correo: email,
+      role: newUser.role,
+    });
+
+    setUserData({ id: uid, ...newUser });
+  };
+
+  /* ---------------- login ------------------------------ */
   const login = async (email: string, password: string) => {
-    try {
-      const userCredential = await signInWithEmailAndPassword(auth, email, password);
-      const user = userCredential.user;
-      
-      // Obtener datos del usuario desde Firestore
-      const userDoc = await getDoc(doc(db, 'users', user.uid));
-      if (userDoc.exists()) {
-        const userData = { id: user.uid, ...userDoc.data() as Omit<UserData, 'id'> };
-        setUserData(userData);
-        return userData; // Devolver los datos del usuario
-      }
-      return null;
-    } catch (error) {
-      console.error('Error de inicio de sesión:', error);
-      throw error;
+    const cred = await signInWithEmailAndPassword(auth, email, password);
+    const { uid } = cred.user;
+
+    const userDoc = await getDoc(doc(db, 'users', uid));
+    if (userDoc.exists()) {
+      const data = { id: uid, ...userDoc.data() } as UserData;
+      setUserData(data);
+      return data;
     }
+    setUserData(null);
+    return null;
   };
 
-  // Registrar nuevo usuario
-  const register = async (email: string, password: string, userData: UserData): Promise<void> => {
-    try {
-      // Crear usuario en Authentication
-      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-      const user = userCredential.user;
-      
-      // Guardar datos del usuario en Firestore
-      await setDoc(doc(db, 'users', user.uid), {
-        nombre: userData.nombre,
-        apellido: userData.apellido,
-        correo: email,
-        role: userData.role,
-      });
-      
-      // Actualizar estado local
-      setUserData({ id: user.uid, ...userData });
-      
-    } catch (error) {
-      console.error('Error de registro:', error);
-      throw error;
-    }
-  };
-
-  // Cerrar sesión
+  /* ---------------- logout ----------------------------- */
   const logout = async () => {
-    try {
-      await signOut(auth);
-      setUserData(null);
-    } catch (error) {
-      console.error('Error al cerrar sesión:', error);
-      throw error;
-    }
+    await signOut(auth);
+    setUserData(null);
   };
 
-  // Restablecer contraseña
-  const resetPassword = async (email: string) => {
-    try {
-      await sendPasswordResetEmail(auth, email);
-    } catch (error) {
-      console.error('Error al restablecer contraseña:', error);
-      throw error;
-    }
+  /* ---------------- reset password --------------------- */
+  const resetPassword = async (email: string) =>
+    sendPasswordResetEmail(auth, email);
+
+  /* ---------------- update user ------------------------ */
+  const updateUserData = async (patch: Partial<UserData>) => {
+    if (!currentUser || !userData) throw new Error('No user');
+
+    /* Firestore */
+    await updateDoc(doc(db, 'users', currentUser.uid), patch);
+
+    /* RTDB */
+    await rtdbUpdate(rtdbRef(rtdb, `users/${currentUser.uid}`), patch);
+
+    setUserData({ ...userData, ...patch });
   };
 
-  // Actualizar datos del usuario
-  const updateUserData = async (updatedData: Partial<UserData>) => {
-    if (!currentUser || !userData) {
-      throw new Error('No hay usuario autenticado');
-    }
-
-    try {
-      const userRef = doc(db, 'users', currentUser.uid);
-      await updateDoc(userRef, updatedData);
-      
-      // Actualizar estado local
-      setUserData({ ...userData, ...updatedData });
-    } catch (error) {
-      console.error('Error al actualizar datos del usuario:', error);
-      throw error;
-    }
-  };
-
-  // Obtener usuario por ID
+  /* ---------------- get helpers ------------------------ */
   const getUserById = async (id: string) => {
-    try {
-      const userDoc = await getDoc(doc(db, 'users', id));
-      if (userDoc.exists()) {
-        return { id: userDoc.id, ...userDoc.data() as Omit<UserData, 'id'> };
-      }
-      return null;
-    } catch (error) {
-      console.error('Error al obtener usuario por ID:', error);
-      throw error;
-    }
+    const docSnap = await getDoc(doc(db, 'users', id));
+    return docSnap.exists()
+      ? ({ id, ...docSnap.data() } as UserData)
+      : null;
   };
 
-  // Obtener usuario por correo electrónico
   const getUserByEmail = async (email: string) => {
-    try {
-      const usersQuery = query(collection(db, 'users'), where('correo', '==', email));
-      const querySnapshot = await getDocs(usersQuery);
-      
-      if (!querySnapshot.empty) {
-        const userDoc = querySnapshot.docs[0];
-        return { id: userDoc.id, ...userDoc.data() as Omit<UserData, 'id'> };
-      }
-      return null;
-    } catch (error) {
-      console.error('Error al obtener usuario por correo:', error);
-      throw error;
+    const q = query(
+      collection(db, 'users'),
+      where('correo', '==', email)
+    );
+    const snap = await getDocs(q);
+    if (!snap.empty) {
+      const d = snap.docs[0];
+      return { id: d.id, ...d.data() } as UserData;
     }
+    return null;
   };
 
-  // Obtener usuarios por rol
   const getUsersByRole = async (role: UserRole) => {
-    try {
-      const usersQuery = query(collection(db, 'users'), where('role', '==', role));
-      const querySnapshot = await getDocs(usersQuery);
-      
-      return querySnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data() as Omit<UserData, 'id'>
-      }));
-    } catch (error) {
-      console.error('Error al obtener usuarios por rol:', error);
-      throw error;
-    }
+    const q = query(collection(db, 'users'), where('role', '==', role));
+    const snap = await getDocs(q);
+    return snap.docs.map((d) => ({
+      id: d.id,
+      ...d.data(),
+    })) as UserData[];
   };
 
-  // Eliminar usuario
+  /* ---------------- delete user ------------------------ */
   const deleteUser = async () => {
-    if (!currentUser) {
-      throw new Error('No hay usuario autenticado');
-    }
+    if (!currentUser) throw new Error('No user');
 
-    try {
-      // Eliminar documento del usuario en Firestore
-      await deleteDoc(doc(db, 'users', currentUser.uid));
-      
-      // Eliminar usuario de Authentication
-      await currentUser.delete();
-      
-      // Actualizar estado local
-      setUserData(null);
-    } catch (error) {
-      console.error('Error al eliminar usuario:', error);
-      throw error;
-    }
+    // Firestore
+    await deleteDoc(doc(db, 'users', currentUser.uid));
+    // RTDB
+    await rtdbRemove(rtdbRef(rtdb, `users/${currentUser.uid}`));
+    // Auth
+    await currentUser.delete();
+
+    setUserData(null);
   };
 
-  const value = {
+  /* ---------------- context value ---------------------- */
+  const value: AuthContextType = {
     currentUser,
     userData,
     loading,
@@ -240,10 +235,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     getUserById,
     getUserByEmail,
     getUsersByRole,
-    deleteUser
+    deleteUser,
   };
 
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
+  );
 };
 
 export default AuthContext;

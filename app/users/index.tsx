@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+// app/users/index.tsx
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -9,866 +10,226 @@ import {
   Modal,
   TextInput,
   Alert,
-  ActivityIndicator,
-  Platform,
-  PermissionsAndroid
 } from 'react-native';
-import { BleManager, Device } from 'react-native-ble-plx';
 import Slider from '@react-native-community/slider';
-import { Buffer } from 'buffer'; // Añadido para manejar base64 correctamente
+import { LinearGradient } from 'expo-linear-gradient';
+import { ref, onValue, update, set, push, off } from 'firebase/database';
+import { rtdb } from '@/utils/FirebaseConfig';          // <- exporta aquí tu RTDB
 import { useAuth } from '@/context/AuthContext';
 
-// Define the service and characteristic UUIDs for ESP32 communication
-const SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
-const CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
+const LED_LABELS = [
+  'Baño',
+  'Habitación Principal',
+  'Habitación Secundaria',
+  'Habitación de Invitados',
+];
 
-// BLE Manager instance - movido dentro del componente para evitar problemas con hot-reloading
-const HomeScreen: React.FC = () => {
-  // BLE Manager
-  const [bleManager] = useState(() => new BleManager());
-  
-  // Auth context for user role
+export default function Home() {
   const { userData } = useAuth();
-  const userRole = userData?.role || 'child';
-  
-  // State variables
-  const [temperature, setTemperature] = useState(23.2);
-  const [humidity, setHumidity] = useState(95.0);
-  const [motion, setMotion] = useState(false);
-  const [isConnected, setIsConnected] = useState(false);
-  const [connectedDevice, setConnectedDevice] = useState<Device | null>(null);
-  const [logs, setLogs] = useState<string[]>([]);
-  const [isScanning, setIsScanning] = useState(false);
-  const [isPinModalVisible, setIsPinModalVisible] = useState(false);
-  const [pin, setPin] = useState('');
-  const [lightStates, setLightStates] = useState({
-    bathroom: false,
-    mainRoom: false,
-    secondaryRoom: false,
-    guestRoom: false,
-  });
-  const [lightIntensities, setLightIntensities] = useState({
-    bathroom: 100,
-    mainRoom: 100,
-    secondaryRoom: 100,
-    guestRoom: 100,
-  });
-  const [expandedLight, setExpandedLight] = useState<string | null>(null);
-  const [scanTimeoutId, setScanTimeoutId] = useState<NodeJS.Timeout | null>(null);
+  const role = userData?.role ?? 'child';              // “child” o “parent”
 
-  // Solicitar permisos de Bluetooth
-  const requestBlePermissions = async () => {
-    try {
-      if (Platform.OS === 'android' && Platform.Version >= 23) {
-        const granted = await PermissionsAndroid.requestMultiple([
-          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-          ...(Platform.Version >= 31 ? [
-            PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
-            PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
-          ] : []),
-        ]);
-        
-        const allPermissionsGranted = Object.values(granted).every(
-          value => value === PermissionsAndroid.RESULTS.GRANTED
-        );
-        
-        if (!allPermissionsGranted) {
-          Alert.alert('Permisos requeridos', 'Se necesitan permisos de Bluetooth para conectar con el dispositivo');
-          return false;
-        }
-        return true;
-      }
-      return true;
-    } catch (err) {
-      console.warn(err);
-      return false;
-    }
-  };
+  /* --------------------------- estado local --------------------------- */
+  const [temperature, setTemperature] = useState(0);
+  const [humidity,    setHumidity]    = useState(0);
+  const [motion,      setMotion]      = useState(false);
 
-  // Connect to ESP32 via BLE
-  const scanAndConnect = async () => {
-    if (isScanning) return;
-    
-    // Verificar permisos primero
-    const hasPermissions = await requestBlePermissions();
-    if (!hasPermissions) return;
-    
-    try {
-      setIsScanning(true);
-      addLog("Buscando dispositivo ESP32...");
+  const [ledStates,   setLedStates]   = useState([false,false,false,false]);
+  const [ledPWM,      setLedPWM]      = useState  ([0,0,0,0]);
+  const [expanded,    setExpanded]    = useState<number|null>(null);
 
-      // Start scanning for devices
-      bleManager.startDeviceScan(
-        [SERVICE_UUID], 
-        null, 
-        (error, device) => {
-          if (error) {
-            addLog(`Error al escanear: ${error.message}`);
-            setIsScanning(false);
-            return;
-          }
-          
-          if (device && device.name === "ESP32_IoT") {
-            bleManager.stopDeviceScan();
-            
-            // Connect to the device
-            addLog(`Dispositivo ESP32 encontrado: ${device.name}`);
-            connectToDevice(device);
-          }
-        }
-      );
-      
-      // Stop scanning after 10 seconds
-      const timeoutId = setTimeout(() => {
-        bleManager.stopDeviceScan();
-        setIsScanning(false);
-        addLog("Búsqueda de dispositivos finalizada");
-        setScanTimeoutId(null);
-      }, 10000);
+  const [logs,        setLogs]        = useState<string[]>([]);
 
-      setScanTimeoutId(timeoutId);
-      
-    } catch (error) {
-      addLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
-      setIsScanning(false);
-    }
-  };
+  const [pinModal,    setPinModal]    = useState(false);
+  const [pin,         setPin]         = useState('');
 
-  // Connect to a discovered device
-  const connectToDevice = async (device: Device) => {
-    try {
-      addLog(`Conectando a ${device.name}...`);
-      const connectedDevice = await device.connect();
-      const deviceWithServices = await connectedDevice.discoverAllServicesAndCharacteristics();
-      
-      setConnectedDevice(deviceWithServices);
-      setIsConnected(true);
-      setIsScanning(false);
-      addLog(`Conectado a ${device.name}`);
-      
-      // Subscribe to notifications
-      subscribeToNotifications(deviceWithServices);
-      
-    } catch (error) {
-      addLog(`Error al conectar: ${error instanceof Error ? error.message : String(error)}`);
-      setIsConnected(false);
-      setIsScanning(false);
-    }
-  };
-  
-  // Send command to ESP32
-  const sendCommand = async (command: string) => {
-    if (!connectedDevice || !isConnected) {
-      addLog("No hay conexión con ESP32");
-      return;
-    }
-    
-    try {
-      // Usar Buffer para manejar la conversión a base64 correctamente
-      const data = Buffer.from(command, 'utf-8').toString('base64');
-      
-      await connectedDevice.writeCharacteristicWithResponseForService(
-        SERVICE_UUID,
-        CHARACTERISTIC_UUID,
-        data
-      );
-      
-      addLog(`Comando enviado: ${command}`);
-    } catch (error) {
-      addLog(`Error al enviar comando: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  };
-  
-  // Subscribe to BLE notifications
-  const subscribeToNotifications = (device: Device) => {
-    if (!device) return;
-    
-    try {
-      device.monitorCharacteristicForService(
-        SERVICE_UUID,
-        CHARACTERISTIC_UUID,
-        (error, characteristic) => {
-          if (error) {
-            addLog(`Error en notificación: ${error.message}`);
-            return;
-          }
-          
-          if (characteristic?.value) {
-            try {
-              // Decodificar correctamente usando Buffer
-              const decodedValue = Buffer.from(characteristic.value, 'base64').toString('utf-8');
-              handleReceivedData(decodedValue);
-            } catch (decodeError) {
-              addLog(`Error al decodificar datos: ${decodeError instanceof Error ? decodeError.message : String(decodeError)}`);
-            }
-          }
-        }
-      );
-      
-      addLog("Suscrito a notificaciones de ESP32");
-    } catch (error) {
-      addLog(`Error al suscribirse: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  };
-  
-  // Handle data received from ESP32
-  const handleReceivedData = (data: string) => {
-    try {
-      const parsedData = JSON.parse(data);
-      
-      if (parsedData.temperature !== undefined) {
-        setTemperature(parsedData.temperature);
-      }
-      
-      if (parsedData.humidity !== undefined) {
-        setHumidity(parsedData.humidity);
-      }
-      
-      if (parsedData.motion !== undefined) {
-        setMotion(parsedData.motion);
-      }
-      
-      if (parsedData.log) {
-        addLog(parsedData.log);
-      }
-    } catch (error) {
-      addLog(`Error al procesar datos: ${data}`);
-    }
-  };
-  
-  // Add log entry
-  const addLog = (message: string) => {
-    const timestamp = new Date().toISOString().substring(11, 19);
-    const entry = `[${timestamp}] ${message}`;
-    setLogs(prevLogs => [entry, ...prevLogs.slice(0, 9)]);
-    console.log(entry); // Agregar logs también a la consola para debug
-  };
-  
-  // Verify PIN
-  const verifyPIN = () => {
-    if (pin === '123456') {
-      setIsPinModalVisible(false);
-      sendCommand('ACCESS:GRANTED');
-      addLog('Acceso concedido');
-    } else {
-      Alert.alert('Error', 'PIN incorrecto');
-      sendCommand('ACCESS:DENIED');
-      addLog('Acceso denegado');
-    }
-    setPin('');
-  };
-  
-  // Toggle light state
-  const toggleLight = (room: keyof typeof lightStates) => {
-    if (userRole !== 'parent' && userRole !== 'child') {
-      Alert.alert('Acceso denegado', 'No tienes permiso para controlar las luces');
-      return;
-    }
-    
-    setLightStates(prev => {
-      const newState = { ...prev, [room]: !prev[room] };
-      sendCommand(`LIGHT:${room.toUpperCase()}:${newState[room] ? 'ON' : 'OFF'}`);
-      addLog(`${newState[room] ? 'Encendido' : 'Apagado'} LED ${room}`);
-      return newState;
-    });
-  };
-  
-  // Change light intensity
-  const changeLightIntensity = (room: keyof typeof lightIntensities, value: number) => {
-    if (userRole !== 'parent' && userRole !== 'child') {
-      Alert.alert('Acceso denegado', 'No tienes permiso para controlar las luces');
-      return;
-    }
-    
-    const intensity = Math.round(value);
-    setLightIntensities(prev => ({ ...prev, [room]: intensity }));
-    sendCommand(`LIGHT:${room.toUpperCase()}:INTENSITY:${intensity}`);
-    addLog(`Intensidad LED ${room}: ${intensity}%`);
-  };
-  
-  // Control blinds
-  const controlBlinds = (action: string) => {
-    if (userRole !== 'parent' && userRole !== 'child') {
-      Alert.alert('Acceso denegado', 'No tienes permiso para controlar las persianas');
-      return;
-    }
-    
-    sendCommand(`BLINDS:${action}`);
-    addLog(`Persiana: ${action}`);
-  };
-  
-  // Control alarm
-  const controlAlarm = (action: string) => {
-    if (userRole !== 'parent') {
-      Alert.alert('Acceso denegado', 'Solo los padres pueden controlar la alarma');
-      return;
-    }
-    
-    sendCommand(`ALARM:${action}`);
-    addLog(`Alarma: ${action}`);
-  };
-  
-  // Expand/collapse light control
-  const toggleLightExpand = (room: string) => {
-    setExpandedLight(expandedLight === room ? null : room);
-  };
-  
-  // Render numeric keypad button
-  const renderKeypadButton = (number: string) => {
-    return (
-      <TouchableOpacity 
-        style={styles.keypadButton} 
-        onPress={() => setPin(prev => prev + number)}
-        key={`key-${number}`}
-      >
-        <Text style={styles.keypadButtonText}>{number}</Text>
-      </TouchableOpacity>
-    );
-  };
-
-  // Cleanup on unmount
+  /* ---------------------------- firebase RTDB ------------------------- */
   useEffect(() => {
-    return () => {
-      // Limpiar timeout de escaneo si existe
-      if (scanTimeoutId) {
-        clearTimeout(scanTimeoutId);
-      }
-      
-      // Desconectar dispositivos
-      if (isScanning) {
-        bleManager.stopDeviceScan();
-      }
-      
-      if (connectedDevice) {
-        try {
-          connectedDevice.cancelConnection();
-        } catch (error) {
-          console.log('Error al desconectar:', error);
-        }
-      }
-      
-      // Destruir BLE Manager
-      bleManager.destroy();
-    };
-  }, [connectedDevice, isScanning, scanTimeoutId]);
+    /* sensores ---------------- */
+    const tRef   = ref(rtdb, '/Sensores/temperatura');
+    const hRef   = ref(rtdb, '/Sensores/humedad');
+    const pirRef = ref(rtdb, '/Sensores/motion');
+    onValue(tRef,   s => setTemperature(s.val() ?? 0));
+    onValue(hRef,   s => setHumidity   (s.val() ?? 0));
+    onValue(pirRef, s => setMotion     (s.val() === 1));
 
+    /* leds -------------------- */
+    const ledsRef = ref(rtdb, '/Leds');
+    onValue(ledsRef, s => {
+      const d = s.val() ?? {};
+      const st:boolean[]=[]; const pwm:number[]=[];
+      LED_LABELS.forEach((_,i)=>{
+        st [i] = !!d[i]?.state;
+        pwm[i] =  d[i]?.pwm   ?? 0;
+      });
+      setLedStates(st);  setLedPWM(pwm);
+    });
+
+    /* log --------------------- */
+    const logRef = ref(rtdb, '/Eventos');
+    onValue(logRef, s => {
+      const arr:string[]=[];
+      s.forEach(c=>{ arr.unshift(c.val()); });
+      setLogs(arr.slice(0,50));
+    });
+
+    return ()=>{ off(tRef); off(hRef); off(pirRef); off(ledsRef); off(logRef); };
+  }, []);
+
+  const pushLog = (m:string)=>
+    push(ref(rtdb,'/Eventos'),`[${new Date().toLocaleTimeString()}] ${m}`);
+
+  /* --------------------- acciones (escritura en RTDB) ----------------- */
+  const setCurtain = (cmd:'up'|'down'|'stop')=>{
+    set(ref(rtdb,'/Curtain/command'),cmd);
+    pushLog(`Persiana: ${cmd}`);
+  };
+
+  const setAlarm   = (state:boolean)=>{
+    if(role!=='parent') return Alert.alert('Acceso denegado','Solo los padres pueden controlar la alarma');
+    set(ref(rtdb,'/Alarm/active'),state);
+    pushLog(`Alarma ${state?'activada':'desactivada'}`);
+  };
+
+  const toggleLed  = (i:number)=>{
+      const next = !ledStates[i];
+    update(ref(rtdb),{
+      [`/Leds/${i}/state`]:next,
+      [`/Leds/${i}/pwm`  ]:next?255:0,
+    });
+    pushLog(`${next?'Encendido':'Apagado'} LED ${LED_LABELS[i]}`);
+  };
+
+  const changePWM  = (i:number,v:number)=>{
+      update(ref(rtdb),{
+      [`/Leds/${i}/pwm`  ]:Math.round(v),
+    });
+    pushLog(`Intensidad LED ${LED_LABELS[i]} = ${Math.round(v)}`);
+  };
+
+  /* ------------------------------- UI --------------------------------- */
   return (
-    <View style={styles.container}>
-      {/* Header with connection status */}
-      <View style={styles.header}>
-        <View style={styles.connectionStatus}>
-          <Text style={styles.connectionText}>
-            {isConnected ? "Conectado a ESP32" : "Desconectado"}
-          </Text>
-          <View style={[
-            styles.statusIndicator, 
-            { backgroundColor: isConnected ? '#4CAF50' : '#F44336' }
-          ]} />
-        </View>
-        <TouchableOpacity 
-          style={[
-            styles.connectButton,
-            (isConnected || isScanning) && styles.disabledButton
-          ]} 
-          onPress={scanAndConnect}
-          disabled={isConnected || isScanning}
-        >
-          <Text style={styles.buttonText}>
-            {isScanning ? "Buscando..." : isConnected ? "Conectado" : "Conectar"}
-          </Text>
-          {isScanning && <ActivityIndicator color="#fff" size="small" />}
-        </TouchableOpacity>
+    <LinearGradient colors={['#0D47A1','#42A5F5']} style={styles.container}>
+
+      {/* Panel sensores */}
+      <View style={styles.sensorCard}>
+        <Text style={styles.sensorTxt}>Temperatura: {temperature.toFixed(1)} °C</Text>
+        <Text style={styles.sensorTxt}>Humedad:     {humidity   .toFixed(1)} %</Text>
+        <Text style={styles.sensorTxt}>Movimiento:  {motion?'Sí':'No'}</Text>
       </View>
-      
-      {/* Sensor readings */}
-      <View style={styles.sensorPanel}>
-        <Text style={styles.sensorText}>Temperatura: {temperature.toFixed(1)} °C</Text>
-        <Text style={styles.sensorText}>Humedad: {humidity.toFixed(1)} %</Text>
-        <Text style={styles.sensorText}>Movimiento: {motion ? 'Sí' : 'No'}</Text>
+
+      {/* Botones persiana */}
+      <View style={styles.row}>
+        <TouchableOpacity style={styles.btn} onPress={()=>setCurtain('up')}  ><Text style={styles.btnTxt}>Subir Persiana (5s)</Text></TouchableOpacity>
+        <TouchableOpacity style={styles.btn} onPress={()=>setCurtain('down')}><Text style={styles.btnTxt}>Bajar Persiana (5s)</Text></TouchableOpacity>
       </View>
-      
-      {/* Blinds control */}
-      <View style={styles.controlRow}>
-        <TouchableOpacity 
-          style={styles.controlButton} 
-          onPress={() => controlBlinds('UP')}
-          disabled={!isConnected}
-        >
-          <Text style={styles.buttonText}>Subir Persiana (5s)</Text>
-        </TouchableOpacity>
-        <TouchableOpacity 
-          style={styles.controlButton} 
-          onPress={() => controlBlinds('DOWN')}
-          disabled={!isConnected}
-        >
-          <Text style={styles.buttonText}>Bajar Persiana (5s)</Text>
-        </TouchableOpacity>
+      <View style={styles.row}>
+        <TouchableOpacity style={styles.btn} onPress={()=>setCurtain('stop')}><Text style={styles.btnTxt}>Detener Persiana</Text></TouchableOpacity>
       </View>
-      
-      <View style={styles.controlRow}>
-        <TouchableOpacity 
-          style={[styles.controlButton, styles.fullWidthButton]} 
-          onPress={() => controlBlinds('STOP')}
-          disabled={!isConnected}
-        >
-          <Text style={styles.buttonText}>Detener Persiana</Text>
-        </TouchableOpacity>
-      </View>
-      
-      {/* Alarm control - only for parent */}
-      {userRole === 'parent' && (
-        <View style={styles.controlRow}>
-          <TouchableOpacity 
-            style={styles.controlButton} 
-            onPress={() => controlAlarm('ACTIVATE')}
-            disabled={!isConnected}
-          >
-            <Text style={styles.buttonText}>Activar Alarma</Text>
-          </TouchableOpacity>
-          <TouchableOpacity 
-            style={styles.controlButton} 
-            onPress={() => controlAlarm('DEACTIVATE')}
-            disabled={!isConnected}
-          >
-            <Text style={styles.buttonText}>Desactivar Alarma</Text>
-          </TouchableOpacity>
+
+      {/* Botones alarma */}
+      {role==='parent' && (
+        <View style={styles.row}>
+          <TouchableOpacity style={styles.btn} onPress={()=>setAlarm(true)} ><Text style={styles.btnTxt}>Activar Alarma</Text></TouchableOpacity>
+          <TouchableOpacity style={styles.btn} onPress={()=>setAlarm(false)}><Text style={styles.btnTxt}>Desactivar Alarma</Text></TouchableOpacity>
         </View>
       )}
-      
-      {/* Light controls */}
-      <View style={styles.lightsContainer}>
-        {/* Bathroom */}
-        <TouchableOpacity 
-          style={[
-            styles.lightBox, 
-            expandedLight === 'bathroom' && styles.expandedLightBox
-          ]} 
-          onPress={() => toggleLightExpand('bathroom')}
-        >
-          <Text style={styles.lightTitle}>Baño</Text>
-          <Switch
-            value={lightStates.bathroom}
-            onValueChange={() => toggleLight('bathroom')}
-            trackColor={{ false: '#767577', true: '#81b0ff' }}
-            thumbColor={lightStates.bathroom ? '#f5dd4b' : '#f4f3f4'}
-            disabled={!isConnected}
-          />
-          {expandedLight === 'bathroom' && (
-            <View style={styles.intensityControl}>
-              <Text style={styles.intensityText}>
-                Intensidad: {lightIntensities.bathroom}%
-              </Text>
+
+      {/* Cuadrícula LEDs */}
+      <View style={styles.grid}>
+        {LED_LABELS.map((lbl,i)=>(
+          <View key={i} style={styles.tile}>
+            <TouchableOpacity onPress={()=>setExpanded(expanded===i?null:i)}>
+              <Text style={styles.tileTitle}>{lbl}</Text>
+            </TouchableOpacity>
+
+            <Switch
+              value={ledStates[i]}
+              onValueChange={()=>toggleLed(i)}
+              thumbColor={ledStates[i]?'#f5dd4b':'#ccc'}
+            />
+
+            {expanded===i && (
               <Slider
-                value={lightIntensities.bathroom}
-                onValueChange={(value: number) => changeLightIntensity('bathroom', value)}
-                minimumValue={0}
-                maximumValue={100}
-                step={1}
-                minimumTrackTintColor="#81b0ff"
-                maximumTrackTintColor="#000000"
-                thumbTintColor="#f5dd4b"
-                style={styles.slider}
-                disabled={!isConnected}
+                style={{width:'100%',marginTop:8}}
+                minimumValue={0} maximumValue={255} step={1}
+                value={ledPWM[i]}
+                minimumTrackTintColor='#81b0ff'
+                thumbTintColor='#f5dd4b'
+                onSlidingComplete={v=>changePWM(i,v)}
               />
-            </View>
-          )}
-        </TouchableOpacity>
-        
-        {/* Main Room */}
-        <TouchableOpacity 
-          style={[
-            styles.lightBox, 
-            expandedLight === 'mainRoom' && styles.expandedLightBox
-          ]} 
-          onPress={() => toggleLightExpand('mainRoom')}
-        >
-          <Text style={styles.lightTitle}>Habitación Principal</Text>
-          <Switch
-            value={lightStates.mainRoom}
-            onValueChange={() => toggleLight('mainRoom')}
-            trackColor={{ false: '#767577', true: '#81b0ff' }}
-            thumbColor={lightStates.mainRoom ? '#f5dd4b' : '#f4f3f4'}
-            disabled={!isConnected}
-          />
-          {expandedLight === 'mainRoom' && (
-            <View style={styles.intensityControl}>
-              <Text style={styles.intensityText}>
-                Intensidad: {lightIntensities.mainRoom}%
-              </Text>
-              <Slider
-                value={lightIntensities.mainRoom}
-                onValueChange={(value: number) => changeLightIntensity('mainRoom', value)}
-                minimumValue={0}
-                maximumValue={100}
-                step={1}
-                minimumTrackTintColor="#81b0ff"
-                maximumTrackTintColor="#000000"
-                thumbTintColor="#f5dd4b"
-                style={styles.slider}
-                disabled={!isConnected}
-              />
-            </View>
-          )}
-        </TouchableOpacity>
-        
-        {/* Secondary Room */}
-        <TouchableOpacity 
-          style={[
-            styles.lightBox, 
-            expandedLight === 'secondaryRoom' && styles.expandedLightBox
-          ]} 
-          onPress={() => toggleLightExpand('secondaryRoom')}
-        >
-          <Text style={styles.lightTitle}>Habitación Secundaria</Text>
-          <Switch
-            value={lightStates.secondaryRoom}
-            onValueChange={() => toggleLight('secondaryRoom')}
-            trackColor={{ false: '#767577', true: '#81b0ff' }}
-            thumbColor={lightStates.secondaryRoom ? '#f5dd4b' : '#f4f3f4'}
-            disabled={!isConnected}
-          />
-          {expandedLight === 'secondaryRoom' && (
-            <View style={styles.intensityControl}>
-              <Text style={styles.intensityText}>
-                Intensidad: {lightIntensities.secondaryRoom}%
-              </Text>
-              <Slider
-                value={lightIntensities.secondaryRoom}
-                onValueChange={(value: number) => changeLightIntensity('secondaryRoom', value)}
-                minimumValue={0}
-                maximumValue={100}
-                step={1}
-                minimumTrackTintColor="#81b0ff"
-                maximumTrackTintColor="#000000"
-                thumbTintColor="#f5dd4b"
-                style={styles.slider}
-                disabled={!isConnected}
-              />
-            </View>
-          )}
-        </TouchableOpacity>
-        
-        {/* Guest Room */}
-        <TouchableOpacity 
-          style={[
-            styles.lightBox, 
-            expandedLight === 'guestRoom' && styles.expandedLightBox
-          ]} 
-          onPress={() => toggleLightExpand('guestRoom')}
-        >
-          <Text style={styles.lightTitle}>Habitación de Invitados</Text>
-          <Switch
-            value={lightStates.guestRoom}
-            onValueChange={() => toggleLight('guestRoom')}
-            trackColor={{ false: '#767577', true: '#81b0ff' }}
-            thumbColor={lightStates.guestRoom ? '#f5dd4b' : '#f4f3f4'}
-            disabled={!isConnected}
-          />
-          {expandedLight === 'guestRoom' && (
-            <View style={styles.intensityControl}>
-              <Text style={styles.intensityText}>
-                Intensidad: {lightIntensities.guestRoom}%
-              </Text>
-              <Slider
-                value={lightIntensities.guestRoom}
-                onValueChange={(value: number) => changeLightIntensity('guestRoom', value)}
-                minimumValue={0}
-                maximumValue={100}
-                step={1}
-                minimumTrackTintColor="#81b0ff"
-                maximumTrackTintColor="#000000"
-                thumbTintColor="#f5dd4b"
-                style={styles.slider}
-                disabled={!isConnected}
-              />
-            </View>
-          )}
-        </TouchableOpacity>
+            )}
+          </View>
+        ))}
       </View>
-      
-      {/* Enter Home button */}
-      <TouchableOpacity 
-        style={[
-          styles.enterButton,
-          !isConnected && styles.disabledButton
-        ]} 
-        onPress={() => setIsPinModalVisible(true)}
-        disabled={!isConnected}
-      >
-        <Text style={styles.buttonText}>Ingresar a Casa</Text>
+
+      {/* Ingresar a casa */}
+      <TouchableOpacity style={styles.pinBtn} onPress={()=>setPinModal(true)}>
+        <Text style={styles.btnTxt}>Ingresar a Casa</Text>
       </TouchableOpacity>
-      
-      {/* Log panel */}
-      <View style={styles.logPanel}>
-        <Text style={styles.logTitle}>Registro de Actividades:</Text>
-        <ScrollView style={styles.logScroll}>
-          {logs.map((log, index) => (
-            <Text key={index} style={styles.logEntry}>{log}</Text>
-          ))}
+
+      {/* Log */}
+      <View style={styles.logCard}>
+        <ScrollView>
+          {logs.map((l,k)=><Text key={k} style={styles.logTxt}>{l}</Text>)}
         </ScrollView>
       </View>
-      
-      {/* PIN Modal */}
-      <Modal
-        visible={isPinModalVisible}
-        transparent={true}
-        animationType="slide"
-      >
-        <View style={styles.modalContainer}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Ingrese el PIN</Text>
+
+      {/* Modal PIN (básico) */}
+      <Modal visible={pinModal} transparent animationType='fade'>
+        <View style={styles.modalBg}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Ingrese PIN</Text>
             <TextInput
               style={styles.pinInput}
-              value={pin}
-              editable={false}
-              placeholder="******"
+              keyboardType='numeric'
               secureTextEntry
+              value={pin}
+              onChangeText={setPin}
             />
-            
-            <View style={styles.keypad}>
-              <View style={styles.keypadRow}>
-                {renderKeypadButton('1')}
-                {renderKeypadButton('2')}
-                {renderKeypadButton('3')}
-              </View>
-              <View style={styles.keypadRow}>
-                {renderKeypadButton('4')}
-                {renderKeypadButton('5')}
-                {renderKeypadButton('6')}
-              </View>
-              <View style={styles.keypadRow}>
-                {renderKeypadButton('7')}
-                {renderKeypadButton('8')}
-                {renderKeypadButton('9')}
-              </View>
-              <View style={styles.keypadRow}>
-                <TouchableOpacity 
-                  style={styles.keypadButton} 
-                  onPress={() => setPin('')}
-                >
-                  <Text style={styles.keypadButtonText}>C</Text>
-                </TouchableOpacity>
-                {renderKeypadButton('0')}
-                <TouchableOpacity 
-                  style={[styles.keypadButton, styles.enterPinButton]} 
-                  onPress={verifyPIN}
-                >
-                  <Text style={styles.keypadButtonText}>✓</Text>
-                </TouchableOpacity>
-              </View>
+            <View style={styles.row}>
+              <TouchableOpacity style={styles.modalBtn}
+                onPress={()=>{
+                  if(pin==='123456'){            // ejemplo
+                    set(ref(rtdb,'/Access'),'GRANTED');
+                    pushLog('Acceso concedido');
+                    setPinModal(false);
+                  }else Alert.alert('PIN incorrecto');
+                }}>
+                <Text style={styles.btnTxt}>Aceptar</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.modalBtn} onPress={()=>setPinModal(false)}>
+                <Text style={styles.btnTxt}>Cancelar</Text>
+              </TouchableOpacity>
             </View>
-            
-            <TouchableOpacity 
-              style={styles.cancelButton}
-              onPress={() => setIsPinModalVisible(false)}
-            >
-              <Text style={styles.buttonText}>Cancelar</Text>
-            </TouchableOpacity>
           </View>
         </View>
       </Modal>
-    </View>
+    </LinearGradient>
   );
-};
+}
 
+/* ------------------------------ estilos ------------------------------ */
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#3f51b5',
-    padding: 16,
-  },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  connectionStatus: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  connectionText: {
-    color: '#fff',
-    fontSize: 16,
-    marginRight: 8,
-  },
-  statusIndicator: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-  },
-  connectButton: {
-    backgroundColor: '#7986cb',
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    borderRadius: 4,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  disabledButton: {
-    opacity: 0.6,
-  },
-  buttonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: 'bold',
-    marginRight: 8,
-  },
-  sensorPanel: {
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    borderRadius: 8,
-    padding: 16,
-    marginBottom: 16,
-  },
-  sensorText: {
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: 'bold',
-    textAlign: 'center',
-    marginVertical: 4,
-  },
-  controlRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 16,
-  },
-  controlButton: {
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    borderRadius: 8,
-    padding: 16,
-    flex: 1,
-    marginHorizontal: 4,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  fullWidthButton: {
-    marginHorizontal: 0,
-  },
-  lightsContainer: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'space-between',
-    marginBottom: 16,
-  },
-  lightBox: {
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    borderRadius: 8,
-    padding: 16,
-    width: '48%',
-    marginBottom: 16,
-    alignItems: 'center',
-  },
-  expandedLightBox: {
-    width: '100%',
-    height: 'auto',
-  },
-  lightTitle: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: 'bold',
-    marginBottom: 8,
-  },
-  intensityControl: {
-    width: '100%',
-    marginTop: 16,
-  },
-  intensityText: {
-    color: '#fff',
-    fontSize: 14,
-    textAlign: 'center',
-    marginBottom: 8,
-  },
-  slider: {
-    width: '100%',
-    height: 40,
-  },
-  enterButton: {
-    backgroundColor: '#ff9800',
-    borderRadius: 8,
-    padding: 16,
-    marginBottom: 16,
-    alignItems: 'center',
-  },
-  logPanel: {
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    borderRadius: 8,
-    padding: 8,
-    maxHeight: 200,
-  },
-  logTitle: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: 'bold',
-    marginBottom: 8,
-  },
-  logScroll: {
-    flexGrow: 0,
-  },
-  logEntry: {
-    color: '#fff',
-    fontSize: 12,
-    marginBottom: 4,
-  },
-  modalContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-  },
-  modalContent: {
-    backgroundColor: '#fff',
-    borderRadius: 8,
-    padding: 16,
-    width: '80%',
-    alignItems: 'center',
-  },
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    marginBottom: 16,
-  },
-  pinInput: {
-    borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 4,
-    padding: 8,
-    width: '100%',
-    fontSize: 18,
-    textAlign: 'center',
-    marginBottom: 16,
-    letterSpacing: 8,
-  },
-  keypad: {
-    width: '100%',
-  },
-  keypadRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 8,
-  },
-  keypadButton: {
-    backgroundColor: '#f0f0f0',
-    borderRadius: 4,
-    width: '30%',
-    aspectRatio: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  keypadButtonText: {
-    fontSize: 24,
-    fontWeight: 'bold',
-  },
-  enterPinButton: {
-    backgroundColor: '#4CAF50',
-  },
-  cancelButton: {
-    backgroundColor: '#F44336',
-    borderRadius: 4,
-    padding: 8,
-    width: '100%',
-    alignItems: 'center',
-    marginTop: 16,
-  },
-});
+  container:{flex:1},
+  sensorCard:{margin:16,padding:16,borderRadius:12,backgroundColor:'rgba(255,255,255,0.15)'},
+  sensorTxt:{color:'#fff',fontSize:18,textAlign:'center',marginBottom:4},
 
-export default HomeScreen;
+  row:{flexDirection:'row',justifyContent:'space-between',marginHorizontal:16,marginBottom:12},
+  btn:{flex:1,marginHorizontal:4,padding:10,borderRadius:8,backgroundColor:'rgba(255,255,255,0.2)',alignItems:'center'},
+  btnTxt:{color:'#fff',fontWeight:'600',textAlign:'center'},
+
+  grid:{flexDirection:'row',flexWrap:'wrap',justifyContent:'space-between',paddingHorizontal:16},
+  tile:{width:'48%',borderRadius:14,backgroundColor:'rgba(255,255,255,0.15)',padding:14,marginBottom:12,alignItems:'center'},
+  tileTitle:{color:'#fff',fontWeight:'600',marginBottom:8,textAlign:'center'},
+
+  pinBtn:{margin:16,padding:12,borderRadius:8,backgroundColor:'#BBDEFB',alignItems:'center'},
+
+  logCard:{marginHorizontal:16,marginBottom:12,maxHeight:140,padding:10,borderRadius:12,backgroundColor:'rgba(255,255,255,0.15)'},
+  logTxt:{color:'#fff',fontSize:12,marginBottom:2},
+
+  modalBg:{flex:1,backgroundColor:'rgba(0,0,0,0.5)',justifyContent:'center',alignItems:'center'},
+  modalCard:{width:'80%',padding:20,borderRadius:12,backgroundColor:'#fff'},
+  modalTitle:{fontSize:18,fontWeight:'600',marginBottom:12,textAlign:'center'},
+  pinInput:{borderWidth:1,borderColor:'#ccc',borderRadius:8,fontSize:18,padding:8,textAlign:'center',marginBottom:16},
+  modalBtn:{flex:1,marginHorizontal:4,padding:10,borderRadius:8,backgroundColor:'#1565C0',alignItems:'center'}
+});
